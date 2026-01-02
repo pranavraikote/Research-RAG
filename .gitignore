@@ -1,0 +1,80 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+env/
+ENV/
+myenv/
+.venv
+
+# Environment variables
+.env
+.envrc
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project-specific
+# PDFs
+*.pdf
+data/**/*.pdf
+
+# Metadata JSONs
+*.json
+data/**/metadata/*.json
+data/**/*_metadata.json
+
+# Artifacts (generated files)
+artifacts/
+*.index
+*.faiss
+
+# Documentation and examples (excluded as requested)
+docs/
+examples/
+experiments/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS files
+Thumbs.db
+.DS_Store
+
