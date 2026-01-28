@@ -15,10 +15,10 @@ from src.conversation.history import ConversationHistory
 
 def main():
     """
-    Main function for conversational RAG CLI.
+    Main function.
     """
     
-    parser = argparse.ArgumentParser(description='Research Paper Navigator - Conversational Mode')
+    parser = argparse.ArgumentParser(description='Research Paper Navigator')
     
     parser.add_argument('-r', '--retrieval', default = 'semantic', choices = ['semantic', 'bm25', 'hybrid'], 
         help = 'Retrieval strategy')
@@ -87,16 +87,13 @@ def main():
         max_turns = args.max_turns
     )
     
-    print("=" * 60)
-    print("Research Paper Navigator - Conversational Mode")
-    print("=" * 60)
-    print(f"Retrieval: {args.retrieval} | Model: {args.llm_model}")
+    print(f"Querying in conversational mode with {args.retrieval} retrieval strategy...")
+    print(f"Model: {args.llm_model}")
     print("\nCommands:")
     print("  - Type your question and press Enter")
     print("  - 'clear' or 'reset' - Clear conversation history")
     print("  - 'history' - Show conversation history")
     print("  - 'exit' or 'quit' - Exit the program")
-    print("=" * 60)
     print()
     
     # Interactive loop
@@ -156,7 +153,7 @@ def main():
                 answer = result_metadata['answer']
                 has_citations = bool(re.search(r'\[\d+\]', answer))
                 if not has_citations and result_metadata.get('citation_map'):
-                    print("⚠️  The answer does not contain citation numbers\n")
+                    print("The answer does not contain citation numbers\n")
             
             # Displaying metrics
             if result_metadata:
@@ -191,15 +188,13 @@ def main():
                         print(f"**Preview**: {text}\n")
             
             # Showing conversation stats
-            print(f"💬 Conversation: {conversation.get_turn_count()} turns | {conversation.get_total_tokens()} tokens\n")
-            print("-" * 60)
-            print()
+            print(f"Conversation: {conversation.get_turn_count()} turns | {conversation.get_total_tokens()} tokens\n")
         
         except KeyboardInterrupt:
             print("\n\nInterrupted. Exiting...")
             break
         except Exception as e:
-            print(f"\n❌ Error: {e}\n")
+            print(f"\nError: {e}\n")
             import traceback
             traceback.print_exc()
 

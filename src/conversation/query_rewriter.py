@@ -87,8 +87,41 @@ class QueryRewriter:
                 last_method = method_entities[-1]
                 rewritten = re.sub(r'that\s+method', last_method, rewritten, flags=re.IGNORECASE)
         
+        # Resolving "this approach", "that method", "this method" anywhere in query
+        if re.search(r'\b(this|that)\s+(approach|method|technique|framework|model|system)\b', rewritten, re.IGNORECASE):
+            # First try to get from entities (most reliable)
+            recent_entities = history.get_recent_entities()
+            method_entities = [e for e in recent_entities if e[0].isupper() and len(e.split()) <= 3]
+            
+            replacement = None
+            if method_entities:
+                # Use the most recent method entity
+                replacement = method_entities[-1]
+            else:
+                # Fallback: extract from last assistant message
+                last_assistant_msg = None
+                for msg in reversed(history.messages):
+                    if msg.role == "assistant":
+                        last_assistant_msg = msg.content
+                        break
+                
+                if last_assistant_msg:
+                    # Extracting key terms (likely the main topic)
+                    key_terms = self._extract_key_terms(last_assistant_msg)
+                    if key_terms:
+                        replacement = key_terms[0]
+            
+            if replacement:
+                # Replace "this/that approach/method" with the actual term
+                rewritten = re.sub(
+                    r'\b(this|that)\s+(approach|method|technique|framework|model|system)\b',
+                    replacement,
+                    rewritten,
+                    flags=re.IGNORECASE
+                )
+        
         # Resolving "it", "this", "that" at start of query
-        if re.match(r'^(what|how|why|tell|explain|can|could|would)\s+(about\s+)?(it|this|that)', query, re.IGNORECASE):
+        if re.match(r'^(what|how|why|tell|explain|can|could|would)\s+(about\s+)?(it|this|that)', rewritten, re.IGNORECASE):
             # Using the last user query as context
             last_user_msg = None
             for msg in reversed(history.messages):
@@ -102,7 +135,7 @@ class QueryRewriter:
                 if key_terms:
                     rewritten = re.sub(
                         r'^(what|how|why|tell|explain|can|could|would)\s+(about\s+)?(it|this|that)',
-                        f"{rewritten.split()[0]} about {key_terms}",
+                        f"{rewritten.split()[0]} about {key_terms[0] if key_terms else 'GAPO'}",
                         rewritten,
                         flags=re.IGNORECASE
                     )
