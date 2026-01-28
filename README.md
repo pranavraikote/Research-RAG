@@ -15,6 +15,8 @@ ResearchRAG enables you to query a collection of research papers and get well-ci
 - **Streaming Output**: Real-time token streaming with markdown formatting and performance metrics
 - **Multiple Retrieval Strategies**: Choose between semantic-only, BM25-only, or hybrid search
 - **LangChain Integration**: Uses LangChain chains for composable retrieval pipeline
+- **Conversational RAG**: Multi-turn conversations with context preservation and reference resolution
+- **Agentic RAG**: Two-agent system for complex reasoning, comparison, and gap detection across papers
 
 ## Quick Start
 
@@ -112,6 +114,18 @@ python src/main.py --query "Find papers from ACL 2024 about transformers"
 # Automatically filters: conference=ACL, year=2024, title contains "transformer"
 ```
 
+**Conversational mode:**
+```bash
+python src/conversation_main.py
+```
+Starts an interactive session where you can have multi-turn conversations. The system maintains context across turns and resolves references like "it", "that method", "the last 2 papers", etc.
+
+**Agentic mode:**
+```bash
+python src/agentic_main.py -q "Compare GAPO and PPO methods"
+```
+Uses a two-agent system (Retriever + Reasoner) for complex reasoning tasks like comparison, gap detection, and synthesis across multiple papers.
+
 **Note**: Streaming is enabled by default. All queries stream tokens in real-time with markdown formatting.
 
 ## Architecture
@@ -147,7 +161,9 @@ python src/main.py --query "Find papers from ACL 2024 about transformers"
 ```
 ResearchRAG/
 ├── src/
-│   ├── main.py              # CLI interface
+│   ├── main.py              # CLI interface (standalone mode)
+│   ├── conversation_main.py # CLI interface (conversational mode)
+│   ├── agentic_main.py      # CLI interface (agentic mode)
 │   ├── rag_chain.py         # RAG query chain (LangChain-based)
 │   ├── embeddings.py        # Embedding generation
 │   ├── utils.py             # Utility functions
@@ -161,6 +177,15 @@ ResearchRAG/
 │   │   ├── hybrid.py        # Hybrid retrieval
 │   │   ├── reranker.py      # Cross-encoder re-ranking
 │   │   └── query_parser.py  # Metadata filter parsing
+│   ├── conversation/        # Conversational RAG components
+│   │   ├── history.py       # Conversation history management
+│   │   ├── query_rewriter.py # Query rewriting with context
+│   │   └── conversation_rag.py # Conversational RAG chain wrapper
+│   ├── agentic/             # Agentic RAG components
+│   │   ├── base_agent.py    # Base agent framework
+│   │   ├── retriever_agent.py # Retrieval agent
+│   │   ├── reasoner_agent.py # Reasoning agent
+│   │   └── orchestrator.py  # Multi-agent orchestrator
 │   └── chunking/            # Chunking strategies
 │       ├── basic.py         # Fixed-size chunking
 │       └── semantic.py      # Semantic chunking

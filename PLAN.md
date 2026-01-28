@@ -73,17 +73,17 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 
 ### Phase 4: Conversational RAG Enhancement
 
-**Status**: Planned
+**Status**: In Progress
 
 **Goal**: Transform the standalone single-query RAG system into a conversational system that maintains context across multiple turns.
 
-**Planned Features**:
-- [ ] Conversation history management
-- [ ] Query rewriting for follow-up questions
-- [ ] Enhanced prompt with conversation context
-- [ ] Interactive CLI mode
+**Completed**:
+- [x] Conversation history management
+- [x] Query rewriting for follow-up questions
+- [x] Enhanced prompt with conversation context
+- [x] Interactive CLI mode
 - [ ] Multi-turn retrieval optimization
-- [ ] Prompt caching for conversational mode
+- [x] Prompt caching for conversational mode
 
 **Design Considerations**:
 - Balance between context preservation and token limits
