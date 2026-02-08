@@ -1,21 +1,30 @@
 import faiss
 import numpy as np
 from pathlib import Path
-import math
-from .bm25 import BM25Retriever
 from .bm25 import BM25Retriever
 
 class SemanticRetriever:
-    
-    def __init__(self, index_path = None, chunks_path = None, dimension = None, metric = "IP"):
+
+    # HNSW parameters
+    HNSW_M = 32                  # Number of connections per layer
+    HNSW_EF_CONSTRUCTION = 64    # Construction-time search depth
+    HNSW_EF_SEARCH = 32          # Query-time search depth
+    HNSW_MIN_CHUNKS = 1000       # Minimum chunks to use HNSW (Flat fallback below this)
+
+    def __init__(self, index_path = None, chunks_path = None, dimension = None, metric = "IP",
+                 index_type = "hnsw", hnsw_m = None, hnsw_ef_construction = None, hnsw_ef_search = None):
         """
         Initialize semantic retriever.
-        
+
         Args:
             index_path: Path to saved FAISS index
-            chunks_path: Path to chunks JSON file 
-            dimension: Dimension of embeddings 
+            chunks_path: Path to chunks JSON file
+            dimension: Dimension of embeddings
             metric: Distance metric ("IP" for cosine similarity, "L2" for Euclidean distance)
+            index_type: Index type ("hnsw" for HNSW graph search, "flat" for brute-force)
+            hnsw_m: HNSW connections per layer (default 32)
+            hnsw_ef_construction: HNSW construction-time search depth (default 64)
+            hnsw_ef_search: HNSW query-time search depth (default 32)
         """
 
         self.dimension = dimension
@@ -23,22 +32,70 @@ class SemanticRetriever:
         self.chunks = []
         self.metadata = []
         self.metric = metric.upper()
-        
+        self.index_type = index_type.lower()
+        self._active_index_type = None
+
+        # HNSW parameters (use class defaults if not specified)
+        self.hnsw_m = hnsw_m or self.HNSW_M
+        self.hnsw_ef_construction = hnsw_ef_construction or self.HNSW_EF_CONSTRUCTION
+        self.hnsw_ef_search = hnsw_ef_search or self.HNSW_EF_SEARCH
+
         # Loading the index and chunks
         if index_path and Path(index_path).exists():
             self.load_index(index_path)
             self.dimension = self.index.d
-            
+
             if chunks_path is None:
                 chunks_path = str(Path(index_path).parent / "chunks.json")
-            
+
             if Path(chunks_path).exists():
                 self.load_chunks(chunks_path)
-    
+
+    def _create_index(self, dimension, n_chunks = 0):
+        """
+        Creating FAISS index based on configuration function.
+
+        Uses HNSW for large collections (fast approximate search),
+        falls back to Flat for small ones (exact brute-force search).
+
+        Args:
+            dimension: Embedding dimension
+            n_chunks: Number of chunks to be indexed (for auto-selection)
+        """
+
+        # HNSW for large collections, Flat as fallback for small ones
+        if self.index_type == "hnsw" and n_chunks >= self.HNSW_MIN_CHUNKS:
+
+            if self.metric == "IP":
+                self.index = faiss.IndexHNSWFlat(dimension, self.hnsw_m, faiss.METRIC_INNER_PRODUCT)
+            else:
+                self.index = faiss.IndexHNSWFlat(dimension, self.hnsw_m)
+
+            # Setting construction and search parameters
+            self.index.hnsw.efConstruction = self.hnsw_ef_construction
+            self.index.hnsw.efSearch = self.hnsw_ef_search
+            self._active_index_type = "hnsw"
+
+            print(f"Using HNSW index (M={self.hnsw_m}, efConstruction={self.hnsw_ef_construction}, efSearch={self.hnsw_ef_search})")
+
+        else:
+            # Flat index for small collections or explicit flat request
+            if self.metric == "IP":
+                self.index = faiss.IndexFlatIP(dimension)
+            else:
+                self.index = faiss.IndexFlatL2(dimension)
+
+            self._active_index_type = "flat"
+
+            if self.index_type == "hnsw" and n_chunks < self.HNSW_MIN_CHUNKS:
+                print(f"Using Flat index (collection size {n_chunks} below HNSW threshold {self.HNSW_MIN_CHUNKS})")
+            else:
+                print(f"Using Flat index")
+
     def add_chunks(self, embeddings, chunks, metadata):
         """
         Adding chunks to the index function.
-        
+
         Args:
             embeddings: Numpy array of embeddings (n_chunks, dimension)
             chunks: List of chunk texts
@@ -47,46 +104,68 @@ class SemanticRetriever:
 
         if self.index is None:
             self.dimension = embeddings.shape[1]
-            
-            if self.metric == "IP":
-                self.index = faiss.IndexFlatIP(self.dimension)
-            else:
-                self.index = faiss.IndexFlatL2(self.dimension)
+            self._create_index(self.dimension, n_chunks = len(chunks))
 
         elif embeddings.shape[1] != self.dimension:
             raise ValueError(f"Embedding dimension mismatch :(")
-        
+
         embeddings = embeddings.astype('float32')
 
         # Normalizing the vectors if IP chosen
         if self.metric == "IP":
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-            norms[norms == 0] = 1 
+            norms[norms == 0] = 1
             embeddings = embeddings / norms
-        
+
         self.index.add(embeddings)
         self.chunks.extend(chunks)
         self.metadata.extend(metadata)
-    
+
     def load_chunks(self, chunks_path):
         """
         Load chunks and build index function.
-        
+
         Args:
             chunks_path: Path to chunks JSON file
         """
-        
+
         # Loading chunks from disk
         from ..chunking.basic import BasicChunker
         chunk_texts, chunk_metadata = BasicChunker.load_chunks(chunks_path)
-        
+
         self.chunks = chunk_texts
         self.metadata = chunk_metadata
-    
+
+    def _get_valid_ids(self, filters):
+        """
+        Pre-computing valid chunk IDs matching the given filters function.
+
+        Scans metadata to find chunks that match all filter criteria,
+        returning their indices for use with FAISS IDSelector.
+
+        Args:
+            filters: Dictionary of metadata filters
+
+        Returns:
+            valid_ids: Numpy array of valid chunk indices
+        """
+
+        filter_helper = BM25Retriever()
+
+        valid_ids = []
+        for idx, meta in enumerate(self.metadata):
+            if filter_helper.matches_filter(meta, filters):
+                valid_ids.append(idx)
+
+        return np.array(valid_ids, dtype=np.int64)
+
     def search(self, query_embedding, top_k = 10, filters = None):
         """
         Searching for relevant chunks using FAISS index function.
-        
+
+        Uses IDSelector pre-filtering when metadata filters are provided,
+        avoiding wasteful over-retrieval and post-filtering.
+
         Args:
             query_embedding: Query embedding vector
             top_k: Number of results to return
@@ -94,98 +173,99 @@ class SemanticRetriever:
                 - conference: str
                 - year: int
                 - title: str
-        
+
         Returns:
             results: List of retrieved chunks with scores and metadata
         """
 
         if self.index is None or len(self.chunks) == 0:
             return []
-        
+
         query_embedding = query_embedding.reshape(1, -1).astype('float32')
-        
-        # If filters are provided, then let's extend the search a bit more to get more candidates for filtering
-        search_k = top_k * 3 if filters else top_k
-        
-        # Creating a temporary BM25Retriever instance for filter matching (if filters are used)
-        filter_helper = BM25Retriever() if filters else None
-        
+
+        # Normalizing query if IP metric
         if self.metric == "IP":
-            
-            # We need to normalize the query first
             norm = np.linalg.norm(query_embedding)
             if norm > 0:
                 query_embedding = query_embedding / norm
-            
-            # Searching for closest matches!
-            similarities, indices = self.index.search(query_embedding, search_k)
-            
-            results = []
-            for i, (similarity, idx) in enumerate(zip(similarities[0], indices[0])):
-                if idx < len(self.chunks):
-                    
-                    # Applying the metadata filter
-                    if filters and not filter_helper.matches_filter(self.metadata[idx], filters):
-                        continue
-                    
-                    # Preparing the payload
-                    results.append({
-                        "text": self.chunks[idx],
-                        "metadata": self.metadata[idx],
-                        "score": similarity,
-                        "rank": len(results) + 1
-                    })
-                    
-                    # Stop if we have enough results
-                    if len(results) >= top_k:
-                        break
+
+        # Pre-filtering with FAISS IDSelector when filters are provided
+        valid_id_set = None
+        if filters:
+            valid_ids = self._get_valid_ids(filters)
+
+            if len(valid_ids) == 0:
+                return []
+
+            search_k = min(top_k, len(valid_ids))
+
+            try:
+                # FAISS IDSelector for efficient pre-filtering during search
+                id_selector = faiss.IDSelectorBatch(valid_ids)
+
+                if self._active_index_type == "hnsw":
+                    params = faiss.SearchParametersHNSW(sel = id_selector)
+                else:
+                    params = faiss.SearchParameters(sel = id_selector)
+
+                scores, indices = self.index.search(query_embedding, search_k, params = params)
+
+            except (AttributeError, RuntimeError):
+                # Fallback for older FAISS versions: over-retrieve and post-filter
+                valid_id_set = set(valid_ids.tolist())
+                scores, indices = self.index.search(query_embedding, top_k * 3)
         else:
-            # For L2 index (Euclidean distance)
-            distances, indices = self.index.search(query_embedding, search_k)
-            
-            results = []
-            for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
-                if idx < len(self.chunks):
-                    
-                    # Applying the metadata filter
-                    if filters and not filter_helper.matches_filter(self.metadata[idx], filters):
-                        continue
-                    
-                    # L2 distance (lower is better)
-                    results.append({
-                        "text": self.chunks[idx],
-                        "metadata": self.metadata[idx],
-                        "score": float(distance),
-                        "rank": len(results) + 1
-                    })
-                    
-                    # Stop if we have enough results
-                    if len(results) >= top_k:
-                        break
-        
+            scores, indices = self.index.search(query_embedding, top_k)
+
+        # Building results
+        results = []
+        for score, idx in zip(scores[0], indices[0]):
+            if idx < 0 or idx >= len(self.chunks):
+                continue
+
+            # Post-filtering fallback (only when IDSelector wasn't available)
+            if valid_id_set is not None and int(idx) not in valid_id_set:
+                continue
+
+            results.append({
+                "text": self.chunks[idx],
+                "metadata": self.metadata[idx],
+                "score": float(score),
+                "rank": len(results) + 1
+            })
+
+            if len(results) >= top_k:
+                break
+
         return results
-    
+
     def save_index(self, path):
         """
         Saving FAISS index to disk function.
-        
+
         Args:
             path: Path to save the index
         """
 
         faiss.write_index(self.index, path)
-    
+
     def load_index(self, path):
         """
         Loading FAISS index from disk function.
-        
+
         Args:
             path: Path to load the index from
         """
-        
+
         # Loading the index from disk
         self.index = faiss.read_index(path)
-        
+
+        # Detecting index type from loaded index
+        if isinstance(self.index, faiss.IndexHNSWFlat):
+            self._active_index_type = "hnsw"
+        else:
+            self._active_index_type = "flat"
+
         # Detecting metric type from loaded index
         if hasattr(self.index, 'metric_type'):
             if self.index.metric_type == faiss.METRIC_INNER_PRODUCT:
