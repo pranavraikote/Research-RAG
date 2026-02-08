@@ -204,14 +204,16 @@ def main():
             metric=args.metric
         )
     elif args.retrieval == 'bm25':
-        retriever = BM25Retriever(chunks_path=args.chunks_path)
+        bm25_index_path = str(Path(args.index_path).parent / "bm25_index")
+        retriever = BM25Retriever(chunks_path=args.chunks_path, index_path=bm25_index_path)
     elif args.retrieval == 'hybrid':
+        bm25_index_path = str(Path(args.index_path).parent / "bm25_index")
         semantic_ret = SemanticRetriever(
             index_path=args.index_path,
             chunks_path=args.chunks_path,
             metric=args.metric
         )
-        bm25_ret = BM25Retriever(chunks_path=args.chunks_path)
+        bm25_ret = BM25Retriever(chunks_path=args.chunks_path, index_path=bm25_index_path)
         retriever = HybridRetriever(semantic_ret, bm25_ret)
     
     # Initialize RAG chain

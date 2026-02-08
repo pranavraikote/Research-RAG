@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--initial-retrieval-k', type = int, default = 20, help = 'Number of chunks to retrieve initially')
     parser.add_argument('--rerank-k', type = int, default = 3, help = 'Number of top chunks to be used by LLM')
     parser.add_argument('--metric', default = 'IP', choices = ['IP', 'L2'], help = 'Distance metric for semantic search')
+    parser.add_argument('--fusion', default = 'rrf', choices = ['rrf', 'weighted'], help = 'Fusion method for hybrid retrieval (rrf or weighted)')
     
     project_root = Path(__file__).parent.parent
     default_index = str(project_root / "artifacts/faiss_index")
@@ -82,16 +83,19 @@ def main():
                                     )
 
     elif args.retrieval == 'bm25':
-        retriever = BM25Retriever(chunks_path = args.chunks_path)
+        bm25_index_path = str(Path(args.index_path).parent / "bm25_index")
+        retriever = BM25Retriever(chunks_path = args.chunks_path, index_path = bm25_index_path)
 
     elif args.retrieval == 'hybrid':
-        semantic_ret = SemanticRetriever(index_path = args.index_path, 
-                                        chunks_path = args.chunks_path, 
+        bm25_index_path = str(Path(args.index_path).parent / "bm25_index")
+
+        semantic_ret = SemanticRetriever(index_path = args.index_path,
+                                        chunks_path = args.chunks_path,
                                         metric = args.metric
                                         )
-        bm25_ret = BM25Retriever(chunks_path = args.chunks_path)
-        
-        retriever = HybridRetriever(semantic_ret, bm25_ret)
+        bm25_ret = BM25Retriever(chunks_path = args.chunks_path, index_path = bm25_index_path)
+
+        retriever = HybridRetriever(semantic_ret, bm25_ret, fusion_method = args.fusion)
     
     # Initializing the RAG chain
     rag = RAGChain(
