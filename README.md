@@ -8,15 +8,17 @@ ResearchRAG enables you to query a collection of research papers and get well-ci
 
 ## Features
 
-- **Hybrid Retrieval**: Combines semantic search (FAISS) and BM25 keyword search for better recall
+- **Hybrid Retrieval**: Semantic search (FAISS FlatIP) + BM25 (bm25s) with Reciprocal Rank Fusion (RRF)
 - **Cross-Encoder Re-ranking**: Uses cross-encoder models to improve retrieval precision with normalized scores
-- **Metadata Filtering**: Filter by conference, year, or paper title (with auto-parsing from queries)
+- **FAISS IDSelector Pre-filtering**: Metadata filters applied during search, not post-retrieval
 - **Cited Answers**: Answers include numbered citations linking back to source papers
 - **Streaming Output**: Real-time token streaming with markdown formatting and performance metrics
 - **Multiple Retrieval Strategies**: Choose between semantic-only, BM25-only, or hybrid search
-- **LangChain Integration**: Uses LangChain chains for composable retrieval pipeline
-- **Conversational RAG**: Multi-turn conversations with context preservation and reference resolution
+- **LLM Provider Auto-detection**: Tries Ollama first, falls back to HuggingFace automatically
+- **KV Prompt Caching**: Cached system prompt KV for faster TFFT across conversation turns (HuggingFace)
+- **Conversational RAG**: Multi-turn conversations with context preservation, query rewriting, and reference resolution
 - **Agentic RAG**: Two-agent system for complex reasoning, comparison, and gap detection across papers
+- **Retrieval Benchmarking**: Latency benchmarks for all retrieval paths (Semantic, BM25, Hybrid, Filtered)
 
 ## Quick Start
 
@@ -44,56 +46,60 @@ pip install -r requirements.txt
    ```
 
 2. **Download papers from ACL Anthology**:
-   
-   You can download papers programmatically using Python:
-   ```python
-   from src.data.acl_loader import ACLAnthologyLoader
-   
-   loader = ACLAnthologyLoader(data_dir="data/acl")
-   
-   # Download papers from a specific venue and year
-   loader.download_by_venue(venue="ACL", year=2025, limit=50)
-   ```
-   
-   Or create a simple download script:
-   ```python
-   # download_papers.py
-   from src.data.acl_loader import ACLAnthologyLoader
-   
-   loader = ACLAnthologyLoader(data_dir="data/acl")
-   loader.download_by_venue(venue="ACL", year=2025, limit=100)
-   ```
-   
-   **Note**: The `acl_anthology` package is required. Install it with:
    ```bash
-   pip install acl-anthology
+   python src/data/download_papers.py
    ```
-   
+   Downloads papers from ACL, EMNLP, NAACL, EACL, and COLING (2025, 200 per venue).
+
+   Or download programmatically:
+   ```python
+   from src.data.acl_loader import ACLAnthologyLoader
+
+   loader = ACLAnthologyLoader(data_dir="data/acl")
+   loader.download_by_venue(venue="ACL", year=2025, limit=200, save_metadata=True)
+   ```
+
    Alternatively, manually download PDFs and place them in `ResearchRAG/data/acl/` directory.
 
 3. **Process papers and build index**:
    ```bash
-   python src/data/process_papers.py --data-dir data/acl --chunk-size 1000 --chunk-overlap 200
+   python src/data/process_papers.py
    ```
-   
+
    This will:
    - Extract text and metadata from PDFs in `data/acl/`
-   - Chunk the papers into smaller segments
-   - Generate embeddings and build FAISS index
-   - Save chunks to `artifacts/chunks.json` and index to `artifacts/faiss_index`
+   - Chunk papers (1500 chars, 300 overlap) with paragraph-aware text cleaning
+   - Generate embeddings (BAAI/bge-base-en-v1.5, 768d) and build FAISS FlatIP index
+   - Build BM25 index (bm25s with disk persistence)
+   - Save to `artifacts/` (faiss_index, bm25_index, chunks.json)
+
+   Optional flags:
+   ```bash
+   python src/data/process_papers.py --chunk-size 1500 --chunk-overlap 300 --metric IP --index-type flat --limit 100
+   ```
 
 ### Usage
 
-**Basic query:**
+**Basic query (auto-detects Ollama, falls back to HuggingFace):**
 ```bash
-python src/main.py --query "What are the main approaches to few-shot learning?"
+python src/main.py -q "What are the main approaches to few-shot learning?"
 ```
 
-**With hybrid retrieval and re-ranking:**
+**Force a specific LLM provider:**
+```bash
+# Force Ollama
+python src/main.py -q "What are transformers?" --llm-provider ollama --ollama-model qwen2:1.5b
+
+# Force HuggingFace
+python src/main.py -q "What are transformers?" --llm-provider huggingface --llm-model Qwen/Qwen2-1.5B-Instruct
+```
+
+**With hybrid retrieval (RRF fusion) and re-ranking:**
 ```bash
 python src/main.py \
-  --query "How do transformer models handle long sequences?" \
+  -q "How do transformer models handle long sequences?" \
   --retrieval hybrid \
+  --fusion rrf \
   --top-k 5 \
   --initial-retrieval-k 20 \
   --rerank-k 3
@@ -102,7 +108,7 @@ python src/main.py \
 **With metadata filtering:**
 ```bash
 python src/main.py \
-  --query "What methods are used for evaluation in ACL 2025 papers?" \
+  -q "What methods are used for evaluation in ACL 2025 papers?" \
   --conference "ACL" \
   --year "2025"
 ```
@@ -110,21 +116,27 @@ python src/main.py \
 **Auto-parse filters from query:**
 The system automatically detects filters in natural language queries:
 ```bash
-python src/main.py --query "Find papers from ACL 2024 about transformers"
+python src/main.py -q "Find papers from ACL 2024 about transformers"
 # Automatically filters: conference=ACL, year=2024, title contains "transformer"
 ```
 
 **Conversational mode:**
 ```bash
-python src/conversation_main.py
+python src/conversation_main.py --retrieval hybrid
 ```
-Starts an interactive session where you can have multi-turn conversations. The system maintains context across turns and resolves references like "it", "that method", "the last 2 papers", etc.
+Starts an interactive session with multi-turn conversations. Maintains context across turns and resolves references like "it", "that method", "the last 2 papers", etc. Commands: `clear`, `history`, `exit`.
 
 **Agentic mode:**
 ```bash
 python src/agentic_main.py -q "Compare GAPO and PPO methods"
 ```
 Uses a two-agent system (Retriever + Reasoner) for complex reasoning tasks like comparison, gap detection, and synthesis across multiple papers.
+
+**Retrieval benchmarking:**
+```bash
+python src/benchmark_retrieval.py
+```
+Benchmarks all retrieval paths (Semantic, BM25, Hybrid RRF, Filtered) with latency metrics (Avg, P50, P99).
 
 **Note**: Streaming is enabled by default. All queries stream tokens in real-time with markdown formatting.
 
@@ -161,38 +173,39 @@ Uses a two-agent system (Retriever + Reasoner) for complex reasoning tasks like 
 ```
 ResearchRAG/
 ├── src/
-│   ├── main.py              # CLI interface (standalone mode)
-│   ├── conversation_main.py # CLI interface (conversational mode)
-│   ├── agentic_main.py      # CLI interface (agentic mode)
-│   ├── rag_chain.py         # RAG query chain (LangChain-based)
-│   ├── embeddings.py        # Embedding generation
-│   ├── utils.py             # Utility functions
-│   ├── data/                # Data ingestion and processing
-│   │   ├── loader.py        # PDF processing
-│   │   ├── acl_loader.py    # ACL Anthology data loader
-│   │   └── process_papers.py # Paper processing pipeline
-│   ├── retrieval/           # Retrieval strategies
-│   │   ├── semantic.py      # Semantic search (FAISS)
-│   │   ├── bm25.py          # BM25 keyword search
-│   │   ├── hybrid.py        # Hybrid retrieval
-│   │   ├── reranker.py      # Cross-encoder re-ranking
-│   │   └── query_parser.py  # Metadata filter parsing
-│   ├── conversation/        # Conversational RAG components
-│   │   ├── history.py       # Conversation history management
-│   │   ├── query_rewriter.py # Query rewriting with context
+│   ├── main.py                # CLI interface (standalone mode)
+│   ├── conversation_main.py   # CLI interface (conversational mode)
+│   ├── agentic_main.py        # CLI interface (agentic mode)
+│   ├── benchmark_retrieval.py # Retrieval latency benchmarks
+│   ├── rag_chain.py           # RAG query chain (LangChain-based, auto provider cascade)
+│   ├── embeddings.py          # Embedding generation (BAAI/bge-base-en-v1.5)
+│   ├── utils.py               # Utility functions
+│   ├── data/                  # Data ingestion and processing
+│   │   ├── loader.py          # PDF processing (PyMuPDF)
+│   │   ├── acl_loader.py      # ACL Anthology data loader
+│   │   ├── download_papers.py # Paper download script (5 venues, 200/venue)
+│   │   └── process_papers.py  # Paper processing pipeline (chunk + embed + index)
+│   ├── retrieval/             # Retrieval strategies
+│   │   ├── semantic.py        # Semantic search (FAISS FlatIP/HNSW, IDSelector filtering)
+│   │   ├── bm25.py            # BM25 keyword search (bm25s, mmap persistence)
+│   │   ├── hybrid.py          # Hybrid retrieval (RRF + weighted fusion)
+│   │   ├── reranker.py        # Cross-encoder re-ranking
+│   │   └── query_parser.py    # Metadata filter parsing
+│   ├── conversation/          # Conversational RAG components
+│   │   ├── history.py         # Conversation history management
+│   │   ├── query_rewriter.py  # Query rewriting with context
 │   │   └── conversation_rag.py # Conversational RAG chain wrapper
-│   ├── agentic/             # Agentic RAG components
-│   │   ├── base_agent.py    # Base agent framework
+│   ├── agentic/               # Agentic RAG components
+│   │   ├── base_agent.py      # Base agent framework
 │   │   ├── retriever_agent.py # Retrieval agent
-│   │   ├── reasoner_agent.py # Reasoning agent
-│   │   └── orchestrator.py  # Multi-agent orchestrator
-│   └── chunking/            # Chunking strategies
-│       ├── basic.py         # Fixed-size chunking
-│       └── semantic.py      # Semantic chunking
-├── artifacts/               # Generated files (index, chunks)
-├── data/                    # PDF files and metadata
-├── docs/                    # Documentation
-├── examples/                # Example scripts
+│   │   ├── reasoner_agent.py  # Reasoning agent
+│   │   └── orchestrator.py    # Multi-agent orchestrator
+│   └── chunking/              # Chunking strategies
+│       ├── basic.py           # Fixed-size chunking (paragraph-aware cleaning)
+│       └── semantic.py        # Semantic chunking
+├── artifacts/                 # Generated files (faiss_index, bm25_index, chunks.json)
+├── data/                      # PDF files and metadata
+├── docs/                      # Documentation
 └── requirements.txt
 ```
 
@@ -215,11 +228,12 @@ ResearchRAG/
 - Scores are normalized to 0-1 range (min-max scaling)
 - Both original retrieval scores and reranked scores are displayed
 
-### LLM Models
+### LLM Provider Cascade
 
-- **Default**: `Qwen/Qwen2-1.5B-Instruct` (HuggingFace)
-- Supports any HuggingFace model or Ollama models
-- Prompt caching available for HuggingFace models (faster TFFT)
+- **Default**: `auto` (tries Ollama first, falls back to HuggingFace)
+- **Ollama**: `qwen2:1.5b` (default) - fast inference via llama.cpp backend
+- **HuggingFace**: `Qwen/Qwen2-1.5B-Instruct` (default) - auto-downloads, MPS/CUDA/CPU support
+- KV prompt caching available for HuggingFace models (faster TFFT on follow-up queries)
 
 ## Performance Metrics
 
@@ -230,10 +244,12 @@ ResearchRAG/
 ## Tech Stack
 
 - **Framework**: LangChain (chains for retrieval pipeline, wrappers for LLM)
-- **Vector DB**: FAISS (with IP/L2 distance metrics)
-- **Embeddings**: Sentence Transformers (HuggingFace)
-- **Re-ranking**: Cross-encoder models (sentence-transformers)
-- **LLM**: HuggingFace Transformers (or Ollama)
+- **Vector DB**: FAISS (FlatIP for cosine similarity, HNSW support)
+- **Embeddings**: BAAI/bge-base-en-v1.5 (768d, 512 max tokens)
+- **BM25**: bm25s (sparse matrices, disk persistence via mmap)
+- **Re-ranking**: Cross-encoder models (cross-encoder/ms-marco-MiniLM-L-6-v2)
+- **LLM**: Auto-cascade: Ollama (preferred) -> HuggingFace Transformers (fallback)
+- **Data Source**: ACL Anthology (~842 papers, 54K chunks across 5 venues)
 
 ## Development Roadmap
 

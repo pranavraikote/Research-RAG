@@ -93,9 +93,7 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 - [x] Enhanced prompt with conversation context
 - [x] Interactive CLI mode
 - [x] Prompt caching for conversational mode
-
-**Planned**:
-- [ ] Multi-turn retrieval optimization
+- [x] Multi-turn retrieval optimization (discussed paper tracking, follow-up detection, query boosting with paper titles)
 
 **Design Considerations**:
 - Balance between context preservation and token limits
