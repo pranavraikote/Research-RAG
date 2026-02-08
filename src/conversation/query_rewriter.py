@@ -135,7 +135,7 @@ class QueryRewriter:
                 if key_terms:
                     rewritten = re.sub(
                         r'^(what|how|why|tell|explain|can|could|would)\s+(about\s+)?(it|this|that)',
-                        f"{rewritten.split()[0]} about {key_terms[0] if key_terms else 'GAPO'}",
+                        f"{rewritten.split()[0]} about {key_terms[0]}",
                         rewritten,
                         flags=re.IGNORECASE
                     )
@@ -174,13 +174,13 @@ class QueryRewriter:
                 context_keywords.extend(keywords)
                 break
         
-        # If query is very short, add context
-        if len(query.split()) < 5 and context_keywords:
+        # If query is very short (likely a follow-up), add context keywords
+        if len(query.split()) < 4 and context_keywords:
             # Adding relevant keywords that aren't already in query
             query_lower = query.lower()
             new_keywords = [kw for kw in context_keywords if kw.lower() not in query_lower]
             if new_keywords:
-                query = f"{query} {' '.join(new_keywords[:3])}"
+                query = f"{query} {' '.join(new_keywords[:2])}"
         
         return query
     

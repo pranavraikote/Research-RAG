@@ -219,24 +219,28 @@ class ConversationHistory:
     def _classify_entity(self, entity: str) -> str:
         """
         Classifying entity type function (simple heuristic).
-        
+
         Args:
             entity: Entity name
-        
+
         Returns:
             result: Entity type ("paper", "method", "concept", "unknown")
         """
-        
+
         entity_lower = entity.lower()
-        
-        # Paper references
-        if "paper" in entity_lower or any(char.isdigit() for char in entity):
+
+        # Explicit paper references ("paper 1", "paper 2", etc.)
+        if entity_lower.startswith("paper ") and any(c.isdigit() for c in entity):
             return "paper"
-        
-        # Method names (often capitalized or have specific patterns)
+
+        # Quoted titles are likely papers
+        if entity.startswith('"') or entity.startswith("'"):
+            return "paper"
+
+        # Method/model names: uppercase acronyms, possibly with numbers (GPT4, T5, BERT, etc.)
         if entity[0].isupper() and len(entity.split()) <= 3:
             return "method"
-        
+
         return "concept"
     
     def export(self) -> Dict[str, Any]:
