@@ -16,28 +16,30 @@ from src.retrieval.semantic import SemanticRetriever
 
 class PaperProcessor:
     
-    def __init__(self, data_dir = None, chunk_size = 1000, chunk_overlap = 200, index_path = None, metric = "IP"):
+    def __init__(self, data_dir = None, chunk_size = 1500, chunk_overlap = 300, index_path = None,
+                 metric = "IP", index_type = "hnsw"):
         """
         Initialize paper processor.
-        
+
         Args:
             data_dir: Directory with PDF files
             chunk_size: Chunk size in characters
             chunk_overlap: Chunk overlap in characters
             index_path: Path to FAISS index
             metric: Distance metric ("IP" or "L2")
+            index_type: FAISS index type ("hnsw" or "flat")
         """
-        
+
         if data_dir is None:
             project_root = Path(__file__).parent.parent.parent
             data_dir = project_root / "data" / "acl"
-        
+
         self.data_dir = Path(data_dir)
         self.pdf_loader = PDFLoader()
         self.chunker = BasicChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
         self.embedding_gen = EmbeddingGenerator()
-        self.vector_store = SemanticRetriever(index_path=index_path, metric=metric)
+        self.vector_store = SemanticRetriever(index_path=index_path, metric=metric, index_type=index_type)
         self.bm25_retriever = BM25Retriever()
     
     def load_paper_metadata(self, paper_id):
@@ -207,12 +209,22 @@ class PaperProcessor:
     def save_index(self, index_path):
         """
         Saving FAISS index to disk function.
-        
+
         Args:
             index_path: Path to save the index
         """
         self.vector_store.save_index(index_path)
         print(f"Saved FAISS index to {index_path}")
+
+    def save_bm25_index(self, bm25_index_path):
+        """
+        Saving BM25 index to disk for fast loading function.
+
+        Args:
+            bm25_index_path: Directory path to save the BM25 index
+        """
+        self.bm25_retriever.save_index(bm25_index_path)
+        print(f"Saved BM25 index to {bm25_index_path}")
     
     def save_chunks(self, chunks_path):
         """
@@ -239,33 +251,39 @@ if __name__ == "__main__":
     default_index_path = str(project_root / "artifacts" / "faiss_index")
     
     parser.add_argument("--data-dir", default=default_data_dir, help="Directory with PDFs")
-    parser.add_argument("--chunk-size", type=int, default=1000, help="Chunk size in characters")
-    parser.add_argument("--chunk-overlap", type=int, default=200, help="Chunk overlap")
+    parser.add_argument("--chunk-size", type=int, default=1500, help="Chunk size in characters")
+    parser.add_argument("--chunk-overlap", type=int, default=300, help="Chunk overlap")
     parser.add_argument("--limit", type=int, help="Limit number of papers to process")
     parser.add_argument("--index-path", default=default_index_path, help="Path to save FAISS index")
     parser.add_argument("--metric", default="IP", choices=['IP', 'L2'], help="Distance metric (IP=cosine similarity, L2=Euclidean distance)")
-    
+    parser.add_argument("--index-type", default="hnsw", choices=['hnsw', 'flat'], help="FAISS index type (hnsw=fast approximate, flat=exact brute-force)")
+
     args = parser.parse_args()
-    
+
     # Initializing the mighty Processor!
     processor = PaperProcessor(
         data_dir=args.data_dir,
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
         index_path=args.index_path,
-        metric=args.metric
+        metric=args.metric,
+        index_type=args.index_type
     )
-    
+
     stats = processor.process_all_papers(limit=args.limit)
 
     print("Processing Summary:")
     print(f"Processed: {stats['processed']} papers")
     print(f"Failed: {stats['failed']} papers")
     print(f"Total chunks: {stats['total_chunks']}")
-    
+
     processor.save_index(args.index_path)
-    
+
+    # Saving BM25 index alongside FAISS index for fast loading
+    bm25_index_path = str(Path(args.index_path).parent / "bm25_index")
+    processor.save_bm25_index(bm25_index_path)
+
     chunks_path = str(Path(args.index_path).parent / "chunks.json")
     processor.save_chunks(chunks_path)
-    
+
     print("\nProcessing complete!")

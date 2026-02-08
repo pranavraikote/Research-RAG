@@ -115,11 +115,7 @@ class PDFLoader:
         
         # Removing standalone numbers/artifacts
         text = re.sub(r'^\d+\.\s*$', '', text, flags=re.MULTILINE)
-        
-        # Removing figure/table captions that are on their own line
-        text = re.sub(r'^Figure \d+.*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
-        text = re.sub(r'^Table \d+.*$', '', text, flags=re.MULTILINE | re.IGNORECASE)
-        
+
         # Cleaning up multiple spaces
         text = re.sub(r' +', ' ', text)
         
