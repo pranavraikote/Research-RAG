@@ -44,10 +44,12 @@ def main():
     parser.add_argument('--chunks-path', default = default_chunks, help = 'Path to chunks JSON file')
     
     # LLM options
-    parser.add_argument('--llm-model', default = 'Qwen/Qwen2-1.5B-Instruct', 
-        help = 'LLM model name')
-    parser.add_argument('--llm-provider', default = 'huggingface', choices = ['huggingface', 'ollama'],
-        help = 'LLM provider')
+    parser.add_argument('--llm-model', default = 'Qwen/Qwen2-1.5B-Instruct',
+        help = 'LLM model name (HuggingFace format)')
+    parser.add_argument('--llm-provider', default = 'auto', choices = ['auto', 'ollama', 'huggingface'],
+        help = 'LLM provider (auto = try Ollama first, fall back to HuggingFace)')
+    parser.add_argument('--ollama-model', default = 'qwen2:1.5b',
+        help = 'Ollama model name (used when provider is auto or ollama)')
     
     args = parser.parse_args()
     
@@ -80,6 +82,7 @@ def main():
         retriever = retriever,
         llm_model = args.llm_model,
         llm_provider = args.llm_provider,
+        ollama_model = args.ollama_model,
         enable_prompt_cache = True
     )
     
@@ -114,6 +117,7 @@ def main():
             
             elif user_input.lower() in ['clear', 'reset']:
                 conversation.clear()
+                conversation_rag.clear_paper_context()
                 print("Conversation history cleared.\n")
                 continue
             

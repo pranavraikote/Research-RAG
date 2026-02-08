@@ -17,32 +17,68 @@ from .retrieval.reranker import CrossEncoderReranker
 from .retrieval.query_parser import QueryParser
 
 class RAGChain:
-    
+
+    @staticmethod
+    def _check_ollama_available(model_name):
+        """
+        Checking if Ollama is running and the model is available function.
+
+        Args:
+            model_name: Ollama model name to check for
+
+        Returns:
+            result: True if Ollama is running and model is available
+        """
+
+        try:
+            import urllib.request
+            import json
+            req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=2) as response:
+                data = json.loads(response.read())
+                models = [m["name"] for m in data.get("models", [])]
+                # Checking for exact match or prefix match (e.g., "qwen2:1.5b" matches "qwen2:1.5b-instruct")
+                return any(model_name in m or m.startswith(model_name.split(":")[0]) for m in models)
+        except Exception:
+            return False
+
     def __init__(self, embedding_generator, retriever, llm_model, llm_provider,
-        use_quantization = True, quantization_bits = 4, enable_prompt_cache = True):
+        ollama_model = "qwen2:1.5b", use_quantization = True, quantization_bits = 4,
+        enable_prompt_cache = True):
         """
         Initialize RAG chain.
-        
+
         Args:
             embedding_generator: Embedding generator instance
             retriever: Retriever instance (semantic, BM25, or hybrid)
-            llm_model: LLM model name
-            llm_provider: LLM provider 
+            llm_model: LLM model name (HuggingFace format)
+            llm_provider: LLM provider ("auto", "ollama", or "huggingface")
+            ollama_model: Ollama model name (used when provider is "auto" or "ollama")
             use_quantization: Quantization for memory efficiency
             quantization_bits: Quantization bits (4 or 8)
             enable_prompt_cache: Enable prompt caching for faster generation (HuggingFace only)
         """
-        
+
+        # Auto-detecting provider: try Ollama first, fall back to HuggingFace
+        if llm_provider == "auto":
+            if self._check_ollama_available(ollama_model):
+                llm_provider = "ollama"
+                llm_model = ollama_model
+                print(f"Auto-detected Ollama with model '{ollama_model}'")
+            else:
+                llm_provider = "huggingface"
+                print(f"Ollama not available, falling back to HuggingFace with '{llm_model}'")
+
         self.retriever = retriever
         self.llm_provider = llm_provider
         self.embedding_generator = embedding_generator
-        
+
         self.query_parser = QueryParser()
         self.reranker = CrossEncoderReranker()
-        
+
         if llm_provider == "ollama":
             self.llm = ChatOllama(model = llm_model, temperature = 0)
-        
+
         elif llm_provider == "huggingface":
             if torch.backends.mps.is_available():
                 device = "mps"

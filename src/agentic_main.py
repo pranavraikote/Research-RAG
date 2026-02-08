@@ -97,9 +97,11 @@ def main():
     
     # LLM options
     parser.add_argument('--llm-model', default='Qwen/Qwen2-1.5B-Instruct',
-                       help='LLM model name (HuggingFace) - Use 1.5B for MPS stability')
-    parser.add_argument('--llm-provider', default='huggingface', choices=['huggingface', 'ollama'],
-                       help='LLM provider')
+                       help='LLM model name (HuggingFace format)')
+    parser.add_argument('--llm-provider', default='auto', choices=['auto', 'ollama', 'huggingface'],
+                       help='LLM provider (auto = try Ollama first, fall back to HuggingFace)')
+    parser.add_argument('--ollama-model', default='qwen2:1.5b',
+                       help='Ollama model name (used when provider is auto or ollama)')
     parser.add_argument('--no-quantization', action='store_true',
                        help='Disable quantization (use full precision)')
     parser.add_argument('--quantization-bits', type=int, default=4, choices=[4, 8],
@@ -217,12 +219,13 @@ def main():
         retriever = HybridRetriever(semantic_ret, bm25_ret)
     
     # Initialize RAG chain
-    print(f"Initializing RAG chain with {args.llm_provider}...")
+    print(f"Initializing RAG chain with {args.llm_provider} provider...")
     rag_chain = RAGChain(
         embedding_generator=embedding_gen,
         retriever=retriever,
         llm_model=args.llm_model,
         llm_provider=args.llm_provider,
+        ollama_model=args.ollama_model,
         use_quantization=not args.no_quantization,
         quantization_bits=args.quantization_bits,
         enable_prompt_cache=not args.no_prompt_cache

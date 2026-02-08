@@ -26,7 +26,15 @@ def main():
     parser.add_argument('--rerank-k', type = int, default = 3, help = 'Number of top chunks to be used by LLM')
     parser.add_argument('--metric', default = 'IP', choices = ['IP', 'L2'], help = 'Distance metric for semantic search')
     parser.add_argument('--fusion', default = 'rrf', choices = ['rrf', 'weighted'], help = 'Fusion method for hybrid retrieval (rrf or weighted)')
-    
+
+    # LLM options
+    parser.add_argument('--llm-model', default = 'Qwen/Qwen2-1.5B-Instruct',
+        help = 'LLM model name (HuggingFace format)')
+    parser.add_argument('--llm-provider', default = 'auto', choices = ['auto', 'ollama', 'huggingface'],
+        help = 'LLM provider (auto = try Ollama first, fall back to HuggingFace)')
+    parser.add_argument('--ollama-model', default = 'qwen2:1.5b',
+        help = 'Ollama model name (used when provider is auto or ollama)')
+
     project_root = Path(__file__).parent.parent
     default_index = str(project_root / "artifacts/faiss_index")
     default_chunks = str(project_root / "artifacts/chunks.json")
@@ -101,8 +109,9 @@ def main():
     rag = RAGChain(
         embedding_generator = embedding_gen,
         retriever = retriever,
-        llm_model = "Qwen/Qwen2-1.5B-Instruct",
-        llm_provider = "huggingface",
+        llm_model = args.llm_model,
+        llm_provider = args.llm_provider,
+        ollama_model = args.ollama_model,
         enable_prompt_cache = True
     )
     
