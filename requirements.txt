@@ -9,7 +9,7 @@ faiss-cpu>=1.7.4
 pypdf>=3.17.0
 PyMuPDF>=1.23.0  
 
-rank-bm25>=0.2.2
+bm25s>=0.2.0
 
 requests>=2.31.0
 beautifulsoup4>=4.12.0

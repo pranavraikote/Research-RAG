@@ -8,7 +8,9 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 
 **Technology Stack**:
 - **Framework**: LangChain
-- **Vector Database**: FAISS
+- **Vector Database**: FAISS (FlatIP, HNSW support)
+- **Embeddings**: BAAI/bge-base-en-v1.5 (768d, 512 max tokens)
+- **BM25**: bm25s (sparse matrices, disk persistence)
 - **Primary Data Source**: ACL Anthology
 - **Deployment**: Local CLI-based interface
 
@@ -43,10 +45,15 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 - [x] Weighted combination strategy
 - [x] Display of both original and reranked scores
 - [x] Metadata filtering with auto-parsing
+- [x] Reciprocal rank fusion (RRF) as alternative fusion method
+- [x] Migrated BM25 to bm25s (sparse matrices, disk persistence via mmap)
+- [x] FAISS IDSelector pre-filtering (filter during search, not post-retrieval)
+- [x] Upgraded embedding model to BAAI/bge-base-en-v1.5 (768d, 512 max tokens)
+- [x] HNSW index support with FlatIP fallback
+- [x] Retrieval latency benchmark tooling (Semantic, BM25, Hybrid, Filtered)
 
-**In Progress / Future**:
+**Future**:
 - [ ] Query expansion and reformulation
-- [ ] Reciprocal rank fusion (RRF) as alternative fusion method
 
 ### Phase 3: Advanced Chunking Strategies
 
@@ -57,6 +64,9 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 **Completed**:
 - [x] Semantic chunking implementation
 - [x] Basic fixed-size chunking
+- [x] Pre-chunking vs post-chunking text cleaning (preserve paragraph boundaries for recursive splitter)
+- [x] Optimized chunk size (1500) and overlap (300) for research papers
+- [x] PDF text extraction cleanup (preserve Figure/Table captions, fix hyphenation)
 
 **Planned**:
 - [ ] Citation-aware chunking (preserve citation context)
@@ -82,8 +92,10 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 - [x] Query rewriting for follow-up questions
 - [x] Enhanced prompt with conversation context
 - [x] Interactive CLI mode
-- [ ] Multi-turn retrieval optimization
 - [x] Prompt caching for conversational mode
+
+**Planned**:
+- [ ] Multi-turn retrieval optimization
 
 **Design Considerations**:
 - Balance between context preservation and token limits
@@ -183,6 +195,9 @@ The ACL Anthology is the primary data source, containing complete proceedings fr
 - EMNLP (Empirical Methods in Natural Language Processing)
 - NAACL (North American Chapter of the ACL)
 - EACL (European Chapter of the ACL)
+- COLING (International Conference on Computational Linguistics)
+
+**Current Corpus**: ~842 papers (2025), 54,264 chunks, 200 per venue limit
 
 **Key Features**:
 - Well-structured XML metadata
