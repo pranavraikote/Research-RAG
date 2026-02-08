@@ -7,10 +7,10 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter, CharacterTe
 
 class BasicChunker:
     
-    def __init__(self, chunk_size = 1000, chunk_overlap = 200, strategy = "recursive"):
+    def __init__(self, chunk_size = 1500, chunk_overlap = 300, strategy = "recursive"):
         """
         Initialize basic chunker.
-        
+
         Args:
             chunk_size: Size of chunks in characters
             chunk_overlap: Overlap between chunks in characters
@@ -19,7 +19,7 @@ class BasicChunker:
 
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        
+
         if strategy == "recursive":
             self.splitter = RecursiveCharacterTextSplitter(
                 chunk_size = chunk_size,
@@ -33,51 +33,79 @@ class BasicChunker:
                 separator = "\n"
             )
     
-    def _clean_text(self, text):
+    def _clean_text_preserve_structure(self, text):
         """
-        Cleaning function.
-        
+        Cleaning function that preserves paragraph boundaries for the recursive splitter.
+        Used BEFORE chunking so that \\n\\n and \\n separators still work.
+
         Args:
             text: Un-cleaned text
-        
+
+        Returns:
+            text: Cleaned text with paragraph structure intact
+        """
+
+        if not text:
+            return ""
+
+        # Normalize unicode
+        text = unicodedata.normalize('NFKC', text)
+
+        # Remove control characters and ambiguous unicode characters
+        cleaned = []
+        for char in text:
+
+            # Skip control characters (except common whitespace)
+            if unicodedata.category(char).startswith('C') and char not in ['\n', '\t', ' ']:
+                continue
+
+            # Skip ambiguous unicode characters (like zero-width spaces, etc.)
+            if unicodedata.category(char) == 'Cf':  # Format characters
+                continue
+
+            cleaned.append(char)
+
+        text = ''.join(cleaned)
+
+        # Collapse 3+ newlines into paragraph breaks, but preserve \n\n and \n
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r' +', ' ', text)
+
+        # More cleaning: hyphen-space and other commonly found patterns
+        text = re.sub(r'([a-zA-Z])-\s+([a-z])', r'\1\2', text)
+        text = re.sub(r'\b\d+\.\s*\.\.\.\s*\.\.\.', '', text)
+        text = re.sub(r'Type your question here\.\.\.', '', text)
+
+        # The mandatory final step to strip clean the text
+        text = text.strip()
+
+        return text
+
+    def _clean_text(self, text):
+        """
+        Cleaning function that flattens text into a single block.
+        Used AFTER chunking on individual chunks for final cleanup.
+
+        Args:
+            text: Un-cleaned text
+
         Returns:
             text: Cleaned text
         """
 
         if not text:
             return ""
-        
+
         # Normalize unicode
         text = unicodedata.normalize('NFKC', text)
-        
-        # Remove control characters and ambiguous unicode characters
-        cleaned = []
-        for char in text:
-            
-            # Skip control characters (except common whitespace)
-            if unicodedata.category(char).startswith('C') and char not in ['\n', '\t', ' ']:
-                continue
-            
-            # Skip ambiguous unicode characters (like zero-width spaces, etc.)
-            if unicodedata.category(char) == 'Cf':  # Format characters
-                continue
 
-            cleaned.append(char)
-        
-        text = ''.join(cleaned)
-        
         # Replace newlines and multiple spaces with single spaces
         text = re.sub(r'\n+', ' ', text)
         text = re.sub(r' +', ' ', text)
-        
-        # More cleaning: hyphen-space and other commonly found patterns
-        text = re.sub(r'([a-zA-Z])-\s+([a-z])', r'\1\2', text)
-        text = re.sub(r'\b\d+\.\s*\.\.\.\s*\.\.\.', '', text)
-        text = re.sub(r'Type your question here\.\.\.', '', text)
-        
+
         # The mandatory final step to strip clean the text
         text = text.strip()
-        
+
         return text
     
     # This is something that can work brilliantly or fail miserably :P
@@ -116,7 +144,7 @@ class BasicChunker:
             'pages',
             '©',
             'Department of',
-            'Department'
+            'Department',
             '@',
             'Work done',
             'Visiting',
@@ -181,17 +209,17 @@ class BasicChunker:
         # If missing, call our function and hope it works
         if not title or title.strip() == "":
             title = self._extract_title_from_text(text)
-        
-        # Mandatory cleaning before chunking
-        text = self._clean_text(text)
-        
+
+        # Cleaning before chunking, preserving paragraph boundaries so the recursive splitter can use \n\n and \n
+        text = self._clean_text_preserve_structure(text)
+
         # The first pass chunking process
         chunks = self.splitter.split_text(text)
-        
+
         # This is responsible for the metadata :)
         for i, chunk_text in enumerate(chunks):
-            
-            # Second pass of cleaning, although not required, there could be something left out, and this is anyways super fast
+
+            # Flattening the chunk into a clean single block now that splitting is done
             chunk_text = self._clean_text(chunk_text)
             
             # Skip empty chunks
