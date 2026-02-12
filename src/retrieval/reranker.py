@@ -2,11 +2,22 @@ import numpy as np
 from sentence_transformers import CrossEncoder
 
 class CrossEncoderReranker:
-    
-    def __init__(self, model_name = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+
+    def __init__(self, model_name = "BAAI/bge-reranker-v2-m3"):
         """
         Initialize cross-encoder re-ranker.
-        
+
+        Default model: BAAI/bge-reranker-v2-m3 (2024, SOTA)
+        - 568M parameters
+        - Multilingual support
+        - Significantly better than older MS-MARCO models
+        - Fast inference (10-20ms for 20 chunks)
+
+        Alternative models:
+        - "jina-ai/jina-reranker-v2-base-multilingual" (278M, faster)
+        - "BAAI/bge-reranker-v2-gemma" (2B, best quality)
+        - "cross-encoder/ms-marco-MiniLM-L-6-v2" (legacy, not recommended)
+
         Args:
             model_name: HuggingFace model name for cross-encoder
         """

@@ -28,22 +28,30 @@ class BM25Retriever:
 
     def add_chunks(self, chunks, metadata):
         """
-        Adding chunks function.
+        Add new chunks to the BM25 index.
+
+        NOTE: BM25 requires rebuilding the entire index when adding chunks
+        because IDF (inverse document frequency) must be recalculated across
+        all documents for accurate scoring. This is fast (~seconds for 150K+ chunks)
+        and necessary for correct BM25 scores.
 
         Args:
             chunks: New chunks to be added
             metadata: New metadata to be added along with the chunks
         """
 
+        if not chunks:
+            return  # Nothing to add
+
+        # Extend corpus
         self.chunks.extend(chunks)
         self.metadata.extend(metadata)
 
-        # Tokenizing using bm25s tokenizer with stopword removal
-        corpus_tokens = bm25s.tokenize(self.chunks, stopwords = "en")
-
-        # Rebuilding the BM25 index with the updated chunks
+        # Rebuild index with full corpus (required for accurate IDF calculation)
+        # BM25 indexing is fast enough that rebuilding is acceptable
+        corpus_tokens = bm25s.tokenize(self.chunks, stopwords="en", show_progress=False)
         self.bm25 = bm25s.BM25()
-        self.bm25.index(corpus_tokens)
+        self.bm25.index(corpus_tokens, show_progress=False)
 
     def load_chunks(self, chunks_path):
         """
@@ -78,6 +86,29 @@ class BM25Retriever:
             Path(path).mkdir(parents = True, exist_ok = True)
             self.bm25.save(path)
 
+    def save_chunks(self, chunks_path):
+        """
+        Save chunks and metadata to JSON file.
+
+        Use this after add_chunks() to persist the updated corpus to disk.
+
+        Args:
+            chunks_path: Path to save chunks JSON file
+        """
+        import json
+
+        chunks_data = [
+            {
+                "text": chunk,
+                "metadata": metadata
+            }
+            for chunk, metadata in zip(self.chunks, self.metadata)
+        ]
+
+        Path(chunks_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(chunks_path, "w", encoding="utf-8") as f:
+            json.dump(chunks_data, f, indent=2, ensure_ascii=False)
+
     def load_index(self, path):
         """
         Loading BM25 index from disk with memory mapping function.
@@ -95,9 +126,10 @@ class BM25Retriever:
         Args:
             metadata: Chunk metadata dictionary
             filters: Filter dictionary with:
-                - conference: str
-                - year: int
-                - title: str
+                - conference: str or list
+                - year: int, list, or dict (range: {"min": 2020, "max": 2024})
+                - title: str or list (partial match)
+                - section_type: str or list (e.g., "methods", ["methods", "experiments"])
 
         Returns:
             bool: True if metadata matches filter criteria, False otherwise
@@ -152,6 +184,31 @@ class BM25Retriever:
                     return False
             else:
                 if not any(ft.lower() in chunk_title for ft in filter_title):
+                    return False
+
+        # Section type filter (for structured chunking)
+        if "section_type" in filters:
+            filter_section = filters["section_type"]
+            chunk_section = metadata.get("section_type", "").lower()
+
+            # Skip chunks without section metadata (e.g., basic chunking)
+            if not chunk_section or chunk_section == "unknown":
+                # Allow filtering out chunks without section info
+                # If filter is strict (not "unknown"), exclude these chunks
+                if isinstance(filter_section, str):
+                    if filter_section.lower() != "unknown":
+                        return False
+                elif isinstance(filter_section, list):
+                    if "unknown" not in [s.lower() for s in filter_section]:
+                        return False
+
+            # Match section type
+            if isinstance(filter_section, str):
+                if chunk_section != filter_section.lower():
+                    return False
+            else:
+                # List of allowed sections
+                if chunk_section not in [s.lower() for s in filter_section]:
                     return False
 
         return True

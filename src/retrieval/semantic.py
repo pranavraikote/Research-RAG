@@ -94,7 +94,11 @@ class SemanticRetriever:
 
     def add_chunks(self, embeddings, chunks, metadata):
         """
-        Adding chunks to the index function.
+        Add new chunks to the FAISS index (supports efficient incremental updates).
+
+        FAISS automatically assigns sequential IDs (0, 1, 2, ...) to added vectors.
+        Since we extend chunks/metadata arrays in the same order, the FAISS IDs
+        align perfectly with array indices - no manual ID management needed!
 
         Args:
             embeddings: Numpy array of embeddings (n_chunks, dimension)
@@ -117,6 +121,8 @@ class SemanticRetriever:
             norms[norms == 0] = 1
             embeddings = embeddings / norms
 
+        # FAISS efficiently adds vectors with sequential IDs
+        # IDs match array indices: if we have 1000 chunks, new chunks get IDs 1000, 1001, 1002...
         self.index.add(embeddings)
         self.chunks.extend(chunks)
         self.metadata.extend(metadata)
@@ -248,6 +254,29 @@ class SemanticRetriever:
         """
 
         faiss.write_index(self.index, path)
+
+    def save_chunks(self, chunks_path):
+        """
+        Save chunks and metadata to JSON file.
+
+        Use this after add_chunks() to persist the updated corpus to disk.
+
+        Args:
+            chunks_path: Path to save chunks JSON file
+        """
+        import json
+
+        chunks_data = [
+            {
+                "text": chunk,
+                "metadata": metadata
+            }
+            for chunk, metadata in zip(self.chunks, self.metadata)
+        ]
+
+        Path(chunks_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(chunks_path, "w", encoding="utf-8") as f:
+            json.dump(chunks_data, f, indent=2, ensure_ascii=False)
 
     def load_index(self, path):
         """
