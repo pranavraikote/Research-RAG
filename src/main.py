@@ -11,6 +11,8 @@ from src.rag_chain import RAGChain
 from src.retrieval.semantic import SemanticRetriever
 from src.retrieval.bm25 import BM25Retriever
 from src.retrieval.hybrid import HybridRetriever
+from src.retrieval.adaptive_retriever import AdaptiveRetriever
+from src.chunking.basic import BasicChunker
 
 def main():
     """
@@ -79,20 +81,46 @@ def main():
     
     # Converting empty filters to None
     filters = filters if filters else None
-    
+
+    # Load chunks and metadata for AdaptiveRetriever (context expansion)
+    print("Loading chunks for adaptive retrieval...")
+    chunk_texts, chunk_metadata = BasicChunker.load_chunks(args.chunks_path)
+    print(f"Loaded {len(chunk_texts)} chunks")
+
     # Initializing the EmbeddingGenerator
     embedding_gen = EmbeddingGenerator()
     
     # Initializing retriever based on strategy
     if args.retrieval == 'semantic':
-        retriever = SemanticRetriever(index_path = args.index_path, 
-                                    chunks_path = args.chunks_path, 
+        base_retriever = SemanticRetriever(index_path = args.index_path,
+                                    chunks_path = args.chunks_path,
                                     metric = args.metric
                                     )
 
+        # Wrap with adaptive retriever for automatic section filtering
+        retriever = AdaptiveRetriever(
+            retriever=base_retriever,
+            all_chunks=chunk_texts,
+            all_metadata=chunk_metadata,
+            enable_expansion=True,
+            enable_merging=False,
+            expansion_window=1,
+            embedding_model=embedding_gen  # For query encoding
+        )
+
     elif args.retrieval == 'bm25':
         bm25_index_path = str(Path(args.index_path).parent / "bm25_index")
-        retriever = BM25Retriever(chunks_path = args.chunks_path, index_path = bm25_index_path)
+        base_retriever = BM25Retriever(chunks_path = args.chunks_path, index_path = bm25_index_path)
+
+        # Wrap with adaptive retriever for automatic section filtering
+        retriever = AdaptiveRetriever(
+            retriever=base_retriever,
+            all_chunks=chunk_texts,
+            all_metadata=chunk_metadata,
+            enable_expansion=True,
+            enable_merging=False,
+            expansion_window=1
+        )
 
     elif args.retrieval == 'hybrid':
         bm25_index_path = str(Path(args.index_path).parent / "bm25_index")
@@ -103,7 +131,18 @@ def main():
                                         )
         bm25_ret = BM25Retriever(chunks_path = args.chunks_path, index_path = bm25_index_path)
 
-        retriever = HybridRetriever(semantic_ret, bm25_ret, fusion_method = args.fusion)
+        hybrid_retriever = HybridRetriever(semantic_ret, bm25_ret, fusion_method = args.fusion)
+
+        # Wrap with adaptive retriever for automatic section filtering + expansion
+        retriever = AdaptiveRetriever(
+            retriever=hybrid_retriever,
+            all_chunks=chunk_texts,
+            all_metadata=chunk_metadata,
+            enable_expansion=True,
+            enable_merging=False,
+            expansion_window=1,
+            embedding_model=embedding_gen  # For query encoding
+        )
     
     # Initializing the RAG chain
     rag = RAGChain(

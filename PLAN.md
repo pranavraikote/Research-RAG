@@ -8,9 +8,11 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 
 **Technology Stack**:
 - **Framework**: LangChain
-- **Vector Database**: FAISS (FlatIP, HNSW support)
+- **Vector Database**: FAISS (HNSW with M=32, efConstruction=64, FlatIP fallback)
 - **Embeddings**: BAAI/bge-base-en-v1.5 (768d, 512 max tokens)
-- **BM25**: bm25s (sparse matrices, disk persistence)
+- **BM25**: bm25s (sparse matrices, mmap persistence)
+- **Reranker**: BAAI/bge-reranker-v2-m3 (568M params, multilingual SOTA)
+- **Chunking**: HybridStructuredChunker (section-aware, citation-aware, paragraph-based)
 - **Primary Data Source**: ACL Anthology
 - **Deployment**: Local CLI-based interface
 
@@ -57,7 +59,7 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 
 ### Phase 3: Advanced Chunking Strategies
 
-**Status**: In Progress
+**Status**: Completed (Evaluation Pending)
 
 **Goal**: Implement and systematically evaluate intelligent chunking strategies that preserve semantic structure.
 
@@ -67,13 +69,20 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 - [x] Pre-chunking vs post-chunking text cleaning (preserve paragraph boundaries for recursive splitter)
 - [x] Optimized chunk size (1500) and overlap (300) for research papers
 - [x] PDF text extraction cleanup (preserve Figure/Table captions, fix hyphenation)
+- [x] Citation-aware chunking (HybridStructuredChunker detects and preserves citations)
+- [x] Section-based chunking (automatic section extraction: abstract, intro, methods, results, etc.)
+- [x] Paragraph-based chunking with section context (HybridStructuredChunker)
+- [x] Structure detection utilities (section titles, citations, paragraph boundaries)
+- [x] Adaptive retrieval with automatic section filtering
+- [x] Context expansion with neighboring chunks
+- [x] Updated reranker to BAAI/bge-reranker-v2-m3 (SOTA, 568M params)
+- [x] Built adaptive indices for full corpus (842 PDFs → 152K chunks)
+- [x] Incremental update support for BM25 and FAISS indices
+- [x] Chunk persistence (save_chunks method for both retrievers)
 
-**Planned**:
-- [ ] Citation-aware chunking (preserve citation context)
-- [ ] Section-based chunking (abstract, intro, methods, etc.)
-- [ ] Paragraph-based chunking with section context
+**Pending**:
 - [ ] Chunking ablation study framework
-- [ ] Evaluation metrics for chunking quality
+- [ ] Evaluation metrics for chunking quality (MRR, NDCG, coherence, citation preservation)
 
 **Evaluation Metrics**:
 - Retrieval quality (MRR, NDCG, Precision@K, Recall@K)
@@ -195,7 +204,10 @@ The ACL Anthology is the primary data source, containing complete proceedings fr
 - EACL (European Chapter of the ACL)
 - COLING (International Conference on Computational Linguistics)
 
-**Current Corpus**: ~842 papers (2025), 54,264 chunks, 200 per venue limit
+**Current Corpus**:
+- **Papers**: 842 (2025 conferences, 200 per venue limit)
+- **Basic chunks**: 54,264 (fixed-size, 1500 chars, 300 overlap)
+- **Adaptive chunks**: 152,021 (HybridStructuredChunker, section-aware)
 
 **Key Features**:
 - Well-structured XML metadata
