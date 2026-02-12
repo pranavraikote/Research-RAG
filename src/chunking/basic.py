@@ -38,6 +38,12 @@ class BasicChunker:
         Cleaning function that preserves paragraph boundaries for the recursive splitter.
         Used BEFORE chunking so that \\n\\n and \\n separators still work.
 
+        Enhanced to handle PDF extraction artifacts:
+        - Newlines within citations: (Smith et al.,\\n2024)
+        - Hyphenated words across lines: compu-\\nter
+        - Excessive whitespace
+        - Control characters
+
         Args:
             text: Un-cleaned text
 
@@ -67,12 +73,36 @@ class BasicChunker:
 
         text = ''.join(cleaned)
 
+        # FIX PDF ARTIFACTS - Do this BEFORE collapsing newlines
+
+        # 1. Fix newlines within parentheses (citations, equations, etc.)
+        # (Smith et al.,\n2024) -> (Smith et al., 2024)
+        text = re.sub(r'\(([^)]+)\)', lambda m: '(' + m.group(1).replace('\n', ' ') + ')', text)
+
+        # 2. Fix newlines within square brackets (numeric citations)
+        # [1,\n2, 3] -> [1, 2, 3]
+        text = re.sub(r'\[([^\]]+)\]', lambda m: '[' + m.group(1).replace('\n', ' ') + ']', text)
+
+        # 3. Fix hyphenated words across lines (must be before collapsing spaces)
+        # compu-\nter -> computer
+        text = re.sub(r'([a-zA-Z])-\s*\n\s*([a-z])', r'\1\2', text)
+
+        # 4. Fix broken words with just newline (no hyphen)
+        # This handles cases like: "Transfor\nmer" -> "Transformer"
+        # Only merge if next line starts with lowercase (likely continuation)
+        text = re.sub(r'([a-zA-Z])\n([a-z])', r'\1\2', text)
+
+        # NOW collapse excessive whitespace
         # Collapse 3+ newlines into paragraph breaks, but preserve \n\n and \n
         text = re.sub(r'\n{3,}', '\n\n', text)
+
+        # Collapse multiple spaces into one
         text = re.sub(r' +', ' ', text)
 
-        # More cleaning: hyphen-space and other commonly found patterns
-        text = re.sub(r'([a-zA-Z])-\s+([a-z])', r'\1\2', text)
+        # Fix spaces around newlines
+        text = re.sub(r' *\n *', '\n', text)
+
+        # More cleaning: remove common PDF artifacts
         text = re.sub(r'\b\d+\.\s*\.\.\.\s*\.\.\.', '', text)
         text = re.sub(r'Type your question here\.\.\.', '', text)
 

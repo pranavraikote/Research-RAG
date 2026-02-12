@@ -31,13 +31,25 @@ class EmbeddingGenerator:
     def embed_query(self, query):
         """
         Generate embedding for a single query.
-        
+
         Args:
             query: Query string
-            
+
         Returns:
             Numpy array of embedding (dimension,)
         """
 
         embedding = self.embeddings.embed_query(query)
         return np.array(embedding)
+
+    def encode(self, query):
+        """
+        Alias for embed_query for compatibility with SentenceTransformer interface.
+
+        Args:
+            query: Query string
+
+        Returns:
+            Numpy array of embedding (dimension,)
+        """
+        return self.embed_query(query)
