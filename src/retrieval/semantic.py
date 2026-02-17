@@ -1,20 +1,29 @@
 import faiss
 import numpy as np
 from pathlib import Path
+from typing import ClassVar, List, Dict, Optional, Any
+from pydantic import ConfigDict
 from .bm25 import BM25Retriever
 
-class SemanticRetriever:
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.documents import Document
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+
+class SemanticRetriever(BaseRetriever):
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
     # HNSW parameters
-    HNSW_M = 32                  # Number of connections per layer
-    HNSW_EF_CONSTRUCTION = 64    # Construction-time search depth
-    HNSW_EF_SEARCH = 32          # Query-time search depth
-    HNSW_MIN_CHUNKS = 1000       # Minimum chunks to use HNSW (Flat fallback below this)
+    HNSW_M: ClassVar[int] = 32                  # Number of connections per layer
+    HNSW_EF_CONSTRUCTION: ClassVar[int] = 64    # Construction-time search depth
+    HNSW_EF_SEARCH: ClassVar[int] = 32          # Query-time search depth
+    HNSW_MIN_CHUNKS: ClassVar[int] = 1000       # Minimum chunks to use HNSW (Flat fallback below this)
 
     def __init__(self, index_path = None, chunks_path = None, dimension = None, metric = "IP",
-                 index_type = "hnsw", hnsw_m = None, hnsw_ef_construction = None, hnsw_ef_search = None):
+                 index_type = "hnsw", hnsw_m = None, hnsw_ef_construction = None, hnsw_ef_search = None,
+                 embedding_generator = None, top_k: int = 10, **kwargs):
         """
-        Initialize semantic retriever.
+        Initialize semantic retriever (LangChain-compatible).
 
         Args:
             index_path: Path to saved FAISS index
@@ -25,15 +34,26 @@ class SemanticRetriever:
             hnsw_m: HNSW connections per layer (default 32)
             hnsw_ef_construction: HNSW construction-time search depth (default 64)
             hnsw_ef_search: HNSW query-time search depth (default 32)
+            embedding_generator: EmbeddingGenerator instance (required for LangChain compatibility)
+            top_k: Default number of results to return (used by LangChain)
+            **kwargs: Additional arguments for BaseRetriever
         """
+        # Initialize BaseRetriever (LangChain parent class)
+        # Only pass recognized LangChain fields (tags, metadata) from kwargs
+        lc_kwargs = {k: v for k, v in kwargs.items() if k in ("tags",)}
+        super().__init__(**lc_kwargs)
 
         self.dimension = dimension
         self.index = None
         self.chunks = []
-        self.metadata = []
+        self.chunk_metadata = []
         self.metric = metric.upper()
         self.index_type = index_type.lower()
         self._active_index_type = None
+
+        # LangChain-specific attributes
+        self.embedding_generator = embedding_generator
+        self.top_k = top_k
 
         # HNSW parameters (use class defaults if not specified)
         self.hnsw_m = hnsw_m or self.HNSW_M
@@ -125,7 +145,7 @@ class SemanticRetriever:
         # IDs match array indices: if we have 1000 chunks, new chunks get IDs 1000, 1001, 1002...
         self.index.add(embeddings)
         self.chunks.extend(chunks)
-        self.metadata.extend(metadata)
+        self.chunk_metadata.extend(metadata)
 
     def load_chunks(self, chunks_path):
         """
@@ -140,7 +160,7 @@ class SemanticRetriever:
         chunk_texts, chunk_metadata = BasicChunker.load_chunks(chunks_path)
 
         self.chunks = chunk_texts
-        self.metadata = chunk_metadata
+        self.chunk_metadata = chunk_metadata
 
     def _get_valid_ids(self, filters):
         """
@@ -159,7 +179,7 @@ class SemanticRetriever:
         filter_helper = BM25Retriever()
 
         valid_ids = []
-        for idx, meta in enumerate(self.metadata):
+        for idx, meta in enumerate(self.chunk_metadata):
             if filter_helper.matches_filter(meta, filters):
                 valid_ids.append(idx)
 
@@ -235,7 +255,7 @@ class SemanticRetriever:
 
             results.append({
                 "text": self.chunks[idx],
-                "metadata": self.metadata[idx],
+                "metadata": self.chunk_metadata[idx],
                 "score": float(score),
                 "rank": len(results) + 1
             })
@@ -244,6 +264,50 @@ class SemanticRetriever:
                 break
 
         return results
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: Optional[CallbackManagerForRetrieverRun] = None,
+        top_k: Optional[int] = None,
+        filters: Optional[Dict] = None
+    ) -> List[Document]:
+        """
+        Retrieve documents relevant to a query (LangChain-compatible method).
+
+        This is the required method for BaseRetriever that LangChain calls.
+        It converts a query string to embedding, searches, and returns Document objects.
+
+        Args:
+            query: Query string (NOT embedding - we handle embedding internally)
+            run_manager: Callback manager for logging/tracing (LangChain provides this)
+            top_k: Number of results to return (overrides self.top_k if provided)
+            filters: Metadata filters (conference, year, title, section_type)
+
+        Returns:
+            List of LangChain Document objects with page_content and metadata
+        """
+        # Use instance default if not specified
+        k = top_k if top_k is not None else self.top_k
+
+        # Check if embedding_generator is available
+        if self.embedding_generator is None:
+            raise ValueError(
+                "embedding_generator is required for LangChain compatibility. "
+                "Pass it to __init__: SemanticRetriever(..., embedding_generator=embedding_gen)"
+            )
+
+        query_embedding = self.embedding_generator.embed_query(query)
+        results = self.search(query_embedding, top_k=k, filters=filters)
+
+        return [
+            Document(
+                page_content=result["text"],
+                metadata={**result["metadata"], "score": result["score"], "rank": result["rank"], "retriever": "semantic"}
+            )
+            for result in results
+        ]
 
     def save_index(self, path):
         """
@@ -271,7 +335,7 @@ class SemanticRetriever:
                 "text": chunk,
                 "metadata": metadata
             }
-            for chunk, metadata in zip(self.chunks, self.metadata)
+            for chunk, metadata in zip(self.chunks, self.chunk_metadata)
         ]
 
         Path(chunks_path).parent.mkdir(parents=True, exist_ok=True)

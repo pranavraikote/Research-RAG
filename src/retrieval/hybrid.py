@@ -1,13 +1,21 @@
 import numpy as np
+from typing import List, Dict, Optional, Any
+from pydantic import ConfigDict
 from .semantic import SemanticRetriever
 from .bm25 import BM25Retriever
 
-class HybridRetriever:
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.documents import Document
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+
+class HybridRetriever(BaseRetriever):
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
     def __init__(self, semantic_retriever, bm25_retriever, alpha = 0.7, beta = 0.3,
-                 fusion_method = "rrf", rrf_k = 60):
+                 fusion_method = "rrf", rrf_k = 60, embedding_generator = None, top_k: int = 10, **kwargs):
         """
-        Initialize hybrid retriever.
+        Initialize hybrid retriever (LangChain-compatible).
 
         Args:
             semantic_retriever: Semantic retriever instance
@@ -16,7 +24,12 @@ class HybridRetriever:
             beta: Weight for BM25 scores (weighted fusion only)
             fusion_method: Fusion strategy ("rrf" or "weighted")
             rrf_k: RRF constant (default 60, higher values = more emphasis on top ranks)
+            embedding_generator: EmbeddingGenerator instance (required for LangChain compatibility)
+            top_k: Default number of results to return (used by LangChain)
+            **kwargs: Additional arguments for BaseRetriever
         """
+        lc_kwargs = {k: v for k, v in kwargs.items() if k in ("tags",)}
+        super().__init__(**lc_kwargs)
 
         self.semantic_retriever = semantic_retriever
         self.bm25_retriever = bm25_retriever
@@ -24,6 +37,8 @@ class HybridRetriever:
         self.beta = beta
         self.fusion_method = fusion_method.lower()
         self.rrf_k = rrf_k
+        self.embedding_generator = embedding_generator
+        self.top_k = top_k
 
     def search(self, query, query_embedding, top_k = 10, filters = None):
         """
@@ -154,3 +169,46 @@ class HybridRetriever:
             results.append(result)
 
         return results
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: Optional[CallbackManagerForRetrieverRun] = None,
+        top_k: Optional[int] = None,
+        filters: Optional[Dict] = None
+    ) -> List[Document]:
+        """
+        Retrieve documents relevant to a query (LangChain-compatible method).
+
+        This is the required method for BaseRetriever that LangChain calls.
+        It performs hybrid retrieval (semantic + BM25 fusion) and returns Document objects.
+
+        Args:
+            query: Query string (NOT embedding - we handle embedding internally)
+            run_manager: Callback manager for logging/tracing (LangChain provides this)
+            top_k: Number of results to return (overrides self.top_k if provided)
+            filters: Metadata filters (conference, year, title, section_type)
+
+        Returns:
+            List of LangChain Document objects with page_content and metadata
+        """
+        # Use instance default if not specified
+        k = top_k if top_k is not None else self.top_k
+
+        if self.embedding_generator is None:
+            raise ValueError(
+                "embedding_generator is required for LangChain compatibility. "
+                "Pass it to __init__: HybridRetriever(..., embedding_generator=embedding_gen)"
+            )
+
+        query_embedding = self.embedding_generator.embed_query(query)
+        results = self.search(query, query_embedding, top_k=k, filters=filters)
+
+        return [
+            Document(
+                page_content=result["text"],
+                metadata={**result["metadata"], "score": result["score"], "rank": result["rank"], "retriever": f"hybrid_{self.fusion_method}"}
+            )
+            for result in results
+        ]

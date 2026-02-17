@@ -1,23 +1,36 @@
 import numpy as np
 from pathlib import Path
+from typing import List, Dict, Optional, Any
+from pydantic import ConfigDict
 import bm25s
 
-class BM25Retriever:
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.documents import Document
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
 
-    def __init__(self, chunks_path = None, index_path = None):
+class BM25Retriever(BaseRetriever):
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
+
+    def __init__(self, chunks_path = None, index_path = None, top_k: int = 10, **kwargs):
         """
-        Initialize BM25 retriever.
+        Initialize BM25 retriever (LangChain-compatible).
 
         Uses bm25s for fast sparse retrieval with disk persistence.
 
         Args:
             chunks_path: Path to chunks JSON file
             index_path: Path to saved BM25 index directory
+            top_k: Default number of results to return (used by LangChain)
+            **kwargs: Additional arguments for BaseRetriever
         """
+        lc_kwargs = {k: v for k, v in kwargs.items() if k in ("tags",)}
+        super().__init__(**lc_kwargs)
 
         self.bm25 = None
         self.chunks = []
-        self.metadata = []
+        self.chunk_metadata = []
+        self.top_k = top_k
 
         # Loading from persisted BM25 index if available
         if index_path and Path(index_path).exists():
@@ -45,7 +58,7 @@ class BM25Retriever:
 
         # Extend corpus
         self.chunks.extend(chunks)
-        self.metadata.extend(metadata)
+        self.chunk_metadata.extend(metadata)
 
         # Rebuild index with full corpus (required for accurate IDF calculation)
         # BM25 indexing is fast enough that rebuilding is acceptable
@@ -66,7 +79,7 @@ class BM25Retriever:
         chunk_texts, chunk_metadata = BasicChunker.load_chunks(chunks_path)
 
         self.chunks = chunk_texts
-        self.metadata = chunk_metadata
+        self.chunk_metadata = chunk_metadata
 
         # Building the BM25 index (skip if already loaded from persisted index)
         if self.chunks and self.bm25 is None:
@@ -102,7 +115,7 @@ class BM25Retriever:
                 "text": chunk,
                 "metadata": metadata
             }
-            for chunk, metadata in zip(self.chunks, self.metadata)
+            for chunk, metadata in zip(self.chunks, self.chunk_metadata)
         ]
 
         Path(chunks_path).parent.mkdir(parents=True, exist_ok=True)
@@ -247,12 +260,12 @@ class BM25Retriever:
             score = float(scores[0][i])
 
             # Applying the metadata filter
-            if filters and not self.matches_filter(self.metadata[idx], filters):
+            if filters and not self.matches_filter(self.chunk_metadata[idx], filters):
                 continue
 
             results.append({
                 "text": self.chunks[idx],
-                "metadata": self.metadata[idx],
+                "metadata": self.chunk_metadata[idx],
                 "score": score,
                 "rank": len(results) + 1
             })
@@ -262,3 +275,39 @@ class BM25Retriever:
                 break
 
         return results
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: Optional[CallbackManagerForRetrieverRun] = None,
+        top_k: Optional[int] = None,
+        filters: Optional[Dict] = None
+    ) -> List[Document]:
+        """
+        Retrieve documents relevant to a query (LangChain-compatible method).
+
+        This is the required method for BaseRetriever that LangChain calls.
+        It searches using BM25 and returns Document objects.
+
+        Args:
+            query: Query string
+            run_manager: Callback manager for logging/tracing (LangChain provides this)
+            top_k: Number of results to return (overrides self.top_k if provided)
+            filters: Metadata filters (conference, year, title, section_type)
+
+        Returns:
+            List of LangChain Document objects with page_content and metadata
+        """
+        # Use instance default if not specified
+        k = top_k if top_k is not None else self.top_k
+
+        results = self.search(query, top_k=k, filters=filters)
+
+        return [
+            Document(
+                page_content=result["text"],
+                metadata={**result["metadata"], "score": result["score"], "rank": result["rank"], "retriever": "bm25"}
+            )
+            for result in results
+        ]

@@ -11,10 +11,15 @@ Works with both:
 - HybridRetriever (sparse + dense fusion)
 """
 import re
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Any
+from pydantic import ConfigDict
 from .bm25 import BM25Retriever
 from .semantic import SemanticRetriever
 from .context_expander import ContextExpander
+
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.documents import Document
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
 
 try:
     from .hybrid import HybridRetriever
@@ -23,7 +28,7 @@ except ImportError:
     HYBRID_AVAILABLE = False
 
 
-class AdaptiveRetriever:
+class AdaptiveRetriever(BaseRetriever):
     """
     Smart retriever that automatically adapts strategy based on query.
 
@@ -33,6 +38,8 @@ class AdaptiveRetriever:
     - Optional context expansion
     - Optional same-section merging
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
     # Section keywords mapping (includes both singular and plural forms)
     SECTION_KEYWORDS = {
@@ -56,10 +63,12 @@ class AdaptiveRetriever:
         enable_merging: bool = False,
         expansion_window: int = 1,
         merge_threshold: int = 3,
-        embedding_model = None  # For HybridRetriever query embedding
+        embedding_model = None,  # For HybridRetriever query embedding
+        top_k: int = 10,  # LangChain default
+        **kwargs
     ):
         """
-        Initialize adaptive retriever.
+        Initialize adaptive retriever (LangChain-compatible).
 
         Works with either:
         - BM25Retriever (sparse only)
@@ -74,13 +83,19 @@ class AdaptiveRetriever:
             expansion_window: Number of chunks to add before/after
             merge_threshold: Min chunks to trigger merging
             embedding_model: SentenceTransformer model (for HybridRetriever)
+            top_k: Default number of results to return (used by LangChain)
+            **kwargs: Additional arguments for BaseRetriever
         """
+        lc_kwargs = {k: v for k, v in kwargs.items() if k in ("tags",)}
+        super().__init__(**lc_kwargs)
+
         self.retriever = retriever
         self.enable_expansion = enable_expansion
         self.enable_merging = enable_merging
         self.expansion_window = expansion_window
         self.merge_threshold = merge_threshold
         self.embedding_model = embedding_model
+        self.top_k = top_k
 
         # Detect retriever type
         self.is_hybrid = HYBRID_AVAILABLE and hasattr(retriever, 'semantic_retriever')
@@ -271,6 +286,54 @@ class AdaptiveRetriever:
         explanation["retrieved_count"] = len(results)
 
         return results, explanation
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: Optional[CallbackManagerForRetrieverRun] = None,
+        top_k: Optional[int] = None,
+        filters: Optional[Dict] = None
+    ) -> List[Document]:
+        """
+        Retrieve documents relevant to a query (LangChain-compatible method).
+
+        This is the required method for BaseRetriever that LangChain calls.
+        It performs adaptive retrieval with automatic section detection.
+
+        Args:
+            query: Query string
+            run_manager: Callback manager for logging/tracing (LangChain provides this)
+            top_k: Number of results to return (overrides self.top_k if provided)
+            filters: Metadata filters (conference, year, title, section_type)
+
+        Returns:
+            List of LangChain Document objects with page_content and metadata
+        """
+        # Use instance default if not specified
+        k = top_k if top_k is not None else self.top_k
+
+        detected_sections = self.detect_section_keywords(query)
+
+        query_embedding = None
+        if (self.is_hybrid or self.is_semantic) and self.embedding_model:
+            query_embedding = self.embedding_model.embed_query(query)
+
+        results = self.search(
+            query,
+            top_k=k,
+            filters=filters,
+            query_embedding=query_embedding,
+            verbose=False
+        )
+
+        return [
+            Document(
+                page_content=result["text"],
+                metadata={**result["metadata"], "score": result["score"], "rank": result["rank"], "retriever": "adaptive", "detected_sections": detected_sections}
+            )
+            for result in results
+        ]
 
 
 # Example usage

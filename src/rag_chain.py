@@ -6,13 +6,9 @@ from langchain_community.chat_models import ChatOllama
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_core.runnables import RunnableLambda
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndBytesConfig
 
-from .embeddings import EmbeddingGenerator
-from .retrieval.bm25 import BM25Retriever
-from .retrieval.hybrid import HybridRetriever
-from .retrieval.semantic import SemanticRetriever
 from .retrieval.reranker import CrossEncoderReranker
 from .retrieval.query_parser import QueryParser
 
@@ -72,6 +68,17 @@ class RAGChain:
         self.retriever = retriever
         self.llm_provider = llm_provider
         self.embedding_generator = embedding_generator
+
+        # Inject embedding_generator into retriever if it needs one but wasn't given one.
+        # Supports callers that pass embedding_generator only to RAGChain (legacy pattern).
+        if embedding_generator:
+            if hasattr(retriever, 'embedding_generator') and retriever.embedding_generator is None:
+                retriever.embedding_generator = embedding_generator
+            # For HybridRetriever: also inject into the inner SemanticRetriever
+            if hasattr(retriever, 'semantic_retriever'):
+                sem = retriever.semantic_retriever
+                if hasattr(sem, 'embedding_generator') and sem.embedding_generator is None:
+                    sem.embedding_generator = embedding_generator
 
         self.query_parser = QueryParser()
         self.reranker = CrossEncoderReranker()
@@ -241,61 +248,58 @@ class RAGChain:
         Building RAG chain using LangChain chains function.
         """
         
-        # Block 1: Parsing and embedding
-        def parse_and_embed(inputs: dict) -> dict:
-            
+        # Block 1: Parse filters and prepare inputs
+        def prepare_inputs(inputs: dict) -> dict:
+
             question = inputs.get("question", "")
-            
+
             # Ensure question is a string (handle nested dict case)
             if isinstance(question, dict):
                 question = question.get("question", "")
             if not isinstance(question, str):
                 question = str(question)
-            
+
             auto_parse_filters = inputs.get("auto_parse_filters", True)
             filters = inputs.get("filters")
-            
+
             # Auto-parsing filters from query if enabled
             if auto_parse_filters and filters is None:
                 _, parsed_filters = self.query_parser.parse(question)
                 filters = parsed_filters
-            
-            # Embed the query
-            query_embedding = self.embedding_generator.embed_query(question)
-            
+
             return {
                 "question": question,
-                "query_embedding": query_embedding,
                 "filters": filters,
                 "initial_retrieval_k": inputs.get("initial_retrieval_k", 20),
                 "rerank_k": inputs.get("rerank_k", 3),
                 "top_k": inputs.get("top_k", 5)
             }
-        
-        # Block 2: Retrieve chunks
-        def retrieve(inputs: dict) -> dict:
-            
-            query_embedding = inputs["query_embedding"]
-            question = inputs["question"]
 
+        # Block 2: Retrieve chunks via unified LangChain retriever interface
+        def retrieve(inputs: dict) -> dict:
+
+            question = inputs["question"]
             filters = inputs.get("filters")
             initial_retrieval_k = inputs["initial_retrieval_k"]
-            
-            # Initial retrievals based on retriever type
-            if isinstance(self.retriever, HybridRetriever):
-                initial_chunks = self.retriever.search(
-                    question, query_embedding, top_k=initial_retrieval_k, filters=filters
-                )
-            elif isinstance(self.retriever, BM25Retriever):
-                initial_chunks = self.retriever.search(
-                    question, top_k=initial_retrieval_k, filters=filters
-                )
-            else:
-                # Semantic retriever
-                initial_chunks = self.retriever.search(
-                    query_embedding, top_k=initial_retrieval_k, filters=filters
-                )
-            
+
+            # All retrievers are LangChain-compatible via _get_relevant_documents;
+            # embedding is handled internally by each retriever
+            docs = self.retriever._get_relevant_documents(
+                question, top_k=initial_retrieval_k, filters=filters
+            )
+
+            # Convert Documents to dict format expected by the reranker
+            initial_chunks = [
+                {
+                    "text": doc.page_content,
+                    "metadata": {k: v for k, v in doc.metadata.items()
+                                 if k not in ("score", "rank", "retriever", "detected_sections")},
+                    "score": doc.metadata.get("score", 0),
+                    "rank": doc.metadata.get("rank", 0)
+                }
+                for doc in docs
+            ]
+
             return {
                 "question": question,
                 "initial_chunks": initial_chunks,
@@ -375,8 +379,7 @@ class RAGChain:
         
         # Composing the chain using LangChain runnables
         self.rag_chain = (
-            RunnablePassthrough()
-            | RunnableLambda(parse_and_embed)
+            RunnableLambda(prepare_inputs)
             | RunnableLambda(retrieve)
             | RunnableLambda(rerank)
             | RunnableLambda(format_context)
