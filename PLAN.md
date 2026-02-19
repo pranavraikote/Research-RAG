@@ -41,74 +41,48 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 **Goal**: Improve retrieval quality by re-ranking results and using hybrid search.
 
 **Completed**:
-- [x] Cross-encoder re-ranking implementation
-- [x] Score normalization (0-1 range)
-- [x] Hybrid search (semantic + BM25)
-- [x] Weighted combination strategy
-- [x] Display of both original and reranked scores
-- [x] Metadata filtering with auto-parsing
-- [x] Reciprocal rank fusion (RRF) as alternative fusion method
-- [x] Migrated BM25 to bm25s (sparse matrices, disk persistence via mmap)
-- [x] FAISS IDSelector pre-filtering (filter during search, not post-retrieval)
-- [x] Upgraded embedding model to BAAI/bge-base-en-v1.5 (768d, 512 max tokens)
-- [x] HNSW index support with FlatIP fallback
+- [x] Cross-encoder reranker with min-max score normalisation and original/reranked score display
+- [x] Hybrid search with weighted combination and RRF fusion strategies
+- [x] Metadata filtering with auto-parsing and FAISS IDSelector pre-filtering
+- [x] BM25 via bm25s (sparse matrices, mmap disk persistence)
+- [x] BAAI/bge-base-en-v1.5 embeddings (768d) with HNSW index and FlatIP fallback
 - [x] Retrieval latency benchmark tooling (Semantic, BM25, Hybrid, Filtered)
 
 **Future**:
-- [ ] Query expansion and reformulation
+- [ ] Query expansion and reformulation (see Phase 5 for evaluation-backed motivation)
 
 ### Phase 3: Advanced Chunking Strategies
 
-**Status**: Completed (Evaluation Pending)
+**Status**: Completed
 
 **Goal**: Implement and systematically evaluate intelligent chunking strategies that preserve semantic structure.
 
 **Completed**:
-- [x] Semantic chunking implementation
-- [x] Basic fixed-size chunking
-- [x] Pre-chunking vs post-chunking text cleaning (preserve paragraph boundaries for recursive splitter)
-- [x] Optimized chunk size (1500) and overlap (300) for research papers
-- [x] PDF text extraction cleanup (preserve Figure/Table captions, fix hyphenation)
-- [x] Citation-aware chunking (HybridStructuredChunker detects and preserves citations)
-- [x] Section-based chunking (automatic section extraction: abstract, intro, methods, results, etc.)
-- [x] Paragraph-based chunking with section context (HybridStructuredChunker)
-- [x] Structure detection utilities (section titles, citations, paragraph boundaries)
-- [x] Adaptive retrieval with automatic section filtering
-- [x] Context expansion with neighboring chunks
+- [x] Basic fixed-size chunking (1500 chars, 300 overlap) and semantic chunking implementations
+- [x] PDF text extraction cleanup (preserve Figure/Table captions, fix hyphenation, preserve paragraph boundaries)
+- [x] HybridStructuredChunker: section-aware, citation-aware, paragraph-based chunking with automatic structure detection
+- [x] Adaptive retrieval with section filtering and context expansion via neighbouring chunks
 - [x] Updated reranker to BAAI/bge-reranker-v2-m3 (SOTA, 568M params)
-- [x] Built adaptive indices for full corpus (842 PDFs → 152K chunks)
-- [x] Incremental update support for BM25 and FAISS indices
-- [x] Chunk persistence (save_chunks method for both retrievers)
-
-**Pending**:
-- [ ] Chunking ablation study framework
-- [ ] Evaluation metrics for chunking quality (MRR, NDCG, coherence, citation preservation)
-
-**Evaluation Metrics**:
-- Retrieval quality (MRR, NDCG, Precision@K, Recall@K)
-- Chunk coherence (semantic similarity within chunks)
-- Citation preservation (percentage not split across chunks)
-- Context preservation (overlap effectiveness)
+- [x] Built adaptive indices for full corpus (842 PDFs → 152K chunks) with BM25/FAISS persistence and incremental update support
+- [x] Chunking ablation study framework (basic vs adaptive, 2×2 with reranking)
+- [x] Evaluation metrics: MRR, nDCG@10, P@5, P@10 across all configurations (see EVAL.md)
 
 ### Phase 4: Conversational RAG Enhancement
 
-**Status**: In Progress
+**Status**: Completed
 
 **Goal**: Transform the standalone single-query RAG system into a conversational system that maintains context across multiple turns.
 
 **Completed**:
-- [x] Conversation history management
-- [x] Query rewriting for follow-up questions
-- [x] Enhanced prompt with conversation context
-- [x] Interactive CLI mode
-- [x] Prompt caching for conversational mode
-- [x] Multi-turn retrieval optimization (discussed paper tracking, follow-up detection, query boosting with paper titles)
+- [x] Conversation history with token counting, turn-based truncation, and message summarisation
+- [x] Heuristic query rewriting: pronoun resolution, entity substitution, context keyword expansion
+- [x] Citation reference resolution (paper N / [N] → actual paper title) for follow-up queries
+- [x] Multi-turn retrieval: follow-up detection, query boosting with discussed paper titles
+- [x] Conversation context injected into prompt; prompt caching (KV cache) for HuggingFace provider
+- [x] Interactive CLI mode (`conversation_main.py`) with session export/load support
 
-**Design Considerations**:
-- Balance between context preservation and token limits
-- Query rewriting (heuristic vs. LLM-based)
-- Context-aware retrieval strategies
-- Session persistence (optional)
+**Future**:
+- [ ] LLM-based query rewriting for complex coreference (stub exists, `use_llm_rewriting=False`)
 
 ### Phase 5: Agentic RAG
 
@@ -116,111 +90,39 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 
 **Goal**: Build an agentic system that can reason across papers, compare findings, and identify gaps.
 
+**Motivation from evaluation**
+
+Precision eval (see [EVAL.md](EVAL.md)) revealed a fundamental limitation of single-query retrieval against adaptive chunks: complex queries asking about two linked concepts (problem + solution, method + evaluation) get fragmented because adaptive chunking section-splits the corpus. The KBQA query dropped from MRR=1.0 on basic chunks to MRR=0.25 on adaptive — not because the content is missing, but because it lives in separate section chunks that each score too low individually.
+
+The fix is not simpler chunking — it's smarter querying. Adaptive chunking's section-level granularity is actually an asset when the system can issue multiple targeted sub-queries, each hitting its natural section type (intro for problem framing, methods for technical approach, results for empirical evidence). A multi-query or agentic architecture unlocks this:
+
+```
+Complex query
+    ↓ decompose (LLM)
+Sub-query 1: "X problem definition"    → intro/background sections
+Sub-query 2: "Y method approach"       → methods sections
+Sub-query 3: "Z evaluation results"    → results sections
+    ↓ parallel AdaptiveRetriever calls
+    ↓ RRF merge + dedup
+    ↓ LLM sees focused, section-aligned chunks
+```
+
+This is the key insight: basic chunking is forgiving of single-query retrieval because paragraphs co-locate related ideas. Adaptive chunking is the right design for high-quality generation, but it requires the retrieval layer to match its granularity — either via multi-query decomposition or iterative agent-driven retrieval.
+
 **Planned Features**:
+- [ ] Query decomposition — break complex multi-part queries into focused sub-queries before retrieval
+- [ ] Multi-query retrieval with RRF merge — parallel AdaptiveRetriever calls, one per sub-query
 - [ ] Multi-agent architecture (retriever, analyzer, comparator, synthesizer)
 - [ ] Cross-paper reasoning and comparison
 - [ ] Structured output generation (claims, evidence, limitations)
 - [ ] Gap detection in literature
 - [ ] Iterative refinement and follow-up question generation
 
-## Research Focus Areas
-
-### 1. Chunking Strategy Ablations
-Systematic evaluation of different chunking strategies:
-- Fixed-size vs. semantic boundaries
-- Impact of overlap on retrieval quality
-- Citation-aware chunking effectiveness
-- Section-based vs. paragraph-based chunking
-- Optimal chunk sizes for academic papers
-
-### 2. Retrieval Strategy Comparisons
-Comprehensive comparison of retrieval approaches:
-- Semantic search (embedding-based) baseline
-- BM25 keyword search
-- Hybrid search strategies
-- Re-ranking impact on final results
-- Query expansion and reformulation
-
-### 3. Real-World Use Cases
-Focus on evaluation scenarios that reflect real research needs:
-- Finding papers that cite specific methods
-- Comparing approaches across papers
-- Identifying gaps in literature
-- Extracting claims and supporting evidence
-- Cross-paper reasoning tasks
-
-## Key Considerations
-
-### Performance
-- Monitor latency at each step
-- Optimize batch processing
-- Cache embeddings and frequent queries
-- Use async operations where possible
-- Prompt caching for faster TFFT
-
-### Scalability
-- FAISS supports efficient similarity search at scale
-- Implement batch processing for large collections
-- Use FAISS index serialization for persistence
-- Consider incremental indexing for new papers
-
-### Accuracy
-- Validate retrieval quality regularly
-- Test with diverse query types
-- Monitor hallucination rates
-- Implement fact-checking where possible
-
-### Maintainability
-- Write clean, documented code
-- Use type hints and linting
-- Follow consistent code style
-- Create comprehensive tests
-
-## Evaluation Metrics
-
-### Retrieval Quality
-- **MRR** (Mean Reciprocal Rank): Average of reciprocal ranks of first relevant result
-- **NDCG@K**: Ranking quality metric
-- **Precision@K**: Fraction of retrieved items that are relevant
-- **Recall@K**: Fraction of relevant items that are retrieved
-
-### Answer Quality
-- **Citation Accuracy**: Percentage of citations that are correct and relevant
-- **Groundedness**: How well answers are supported by retrieved chunks
-- **Completeness**: Whether all aspects of query are addressed
-
-### System Performance
-- **TFFT** (Time to First Token): Latency before first token generation
-- **Total Generation Time**: End-to-end query processing time
-- **Index Size**: FAISS index size and memory usage
-
 ## Data Sources
 
-### Primary: ACL Anthology
-The ACL Anthology is the primary data source, containing complete proceedings from:
-- ACL (Association for Computational Linguistics) conferences
-- EMNLP (Empirical Methods in Natural Language Processing)
-- NAACL (North American Chapter of the ACL)
-- EACL (European Chapter of the ACL)
-- COLING (International Conference on Computational Linguistics)
-
-**Current Corpus**:
-- **Papers**: 842 (2025 conferences, 200 per venue limit)
+**Current Corpus** (ACL Anthology, 2025 conferences, 200 papers/venue):
+- **Papers**: 842 — ACL, EMNLP, NAACL, EACL, COLING
 - **Basic chunks**: 54,264 (fixed-size, 1500 chars, 300 overlap)
 - **Adaptive chunks**: 152,021 (HybridStructuredChunker, section-aware)
 
-**Key Features**:
-- Well-structured XML metadata
-- Complete citation networks
-- High-quality PDFs
-- Consistent formatting
-- Rich metadata (authors, venues, years, abstracts)
-
-### Secondary Sources (Future)
-- **NeurIPS**: Neural Information Processing Systems proceedings
-- **ICML**: International Conference on Machine Learning proceedings
-- **arXiv**: Preprints (cs.CL, cs.AI, cs.LG categories)
-
----
-
-**Note**: This is a living document that will be updated as the project evolves. For current implementation status, see the checked items in each phase.
+**Future sources**: NeurIPS, ICML, arXiv (cs.CL, cs.AI, cs.LG)
