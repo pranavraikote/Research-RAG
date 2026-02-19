@@ -11,7 +11,7 @@ Works with both:
 - HybridRetriever (sparse + dense fusion)
 """
 import re
-from typing import List, Dict, Optional, Union, Any
+from typing import ClassVar, List, Dict, Optional, Union, Any
 from pydantic import ConfigDict
 from .bm25 import BM25Retriever
 from .semantic import SemanticRetriever
@@ -42,7 +42,7 @@ class AdaptiveRetriever(BaseRetriever):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
     # Section keywords mapping (includes both singular and plural forms)
-    SECTION_KEYWORDS = {
+    SECTION_KEYWORDS: ClassVar[Dict[str, List[str]]] = {
         "abstract": ["abstract", "summary", "overview"],
         "introduction": ["introduction", "intro", "background", "motivation"],
         "related_work": ["related work", "prior work", "previous work", "literature"],

@@ -151,13 +151,24 @@ class SemanticRetriever(BaseRetriever):
         """
         Load chunks and build index function.
 
+        Handles both chunk formats:
+          - Flat:   [{"text": ..., "chunk_id": ..., "title": ..., ...}, ...]
+          - Nested: [{"text": ..., "metadata": {"chunk_id": ..., ...}}, ...]
+
         Args:
             chunks_path: Path to chunks JSON file
         """
+        import json as _json
+        with open(chunks_path, encoding="utf-8") as f:
+            data = _json.load(f)
 
-        # Loading chunks from disk
-        from ..chunking.basic import BasicChunker
-        chunk_texts, chunk_metadata = BasicChunker.load_chunks(chunks_path)
+        chunk_texts, chunk_metadata = [], []
+        for item in data:
+            chunk_texts.append(item["text"])
+            if "metadata" in item:
+                chunk_metadata.append(item["metadata"])
+            else:
+                chunk_metadata.append({k: v for k, v in item.items() if k != "text"})
 
         self.chunks = chunk_texts
         self.chunk_metadata = chunk_metadata
