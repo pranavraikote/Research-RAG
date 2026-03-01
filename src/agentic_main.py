@@ -2,6 +2,7 @@ import argparse
 import sys
 import logging
 from pathlib import Path
+from uuid import uuid4
 
 # Adding parent directory to path for direct execution
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -12,6 +13,8 @@ from src.retrieval.semantic import SemanticRetriever
 from src.retrieval.bm25 import BM25Retriever
 from src.retrieval.hybrid import HybridRetriever
 from src.agentic.orchestrator import AgenticRAGOrchestrator
+from src.agentic.react_agent import build_react_agent, run_react_agent
+from src.agentic.safety import sanitize_query
 
 
 def format_output(result: dict):
@@ -75,6 +78,21 @@ def format_output(result: dict):
         print(f"- **Task Type**: {task_type}")
 
 
+import re as _re
+_CITATION_RE = _re.compile(
+    r"\([^)]{3,80},\s*(?:ACL|EMNLP|NAACL|EACL|COLING|NeurIPS|ICML|ICLR|\d{4})[^)]*\)",
+    _re.IGNORECASE,
+)
+
+def _warn_if_no_citations(answer: str) -> None:
+    """Print a warning if the answer contains no detectable citations."""
+    if not _CITATION_RE.search(answer):
+        print(
+            "\n  [Citation warning] No citations detected in this answer. "
+            "Verify claims against source papers."
+        )
+
+
 def main():
     """
     Main function for agentic RAG CLI.
@@ -82,7 +100,8 @@ def main():
     
     parser = argparse.ArgumentParser(description='Research Paper Navigator - Agentic Mode')
     
-    parser.add_argument('-q', '--query', required=True, help='Query to ask about research papers')
+    parser.add_argument('-q', '--query', default=None,
+                       help='Query to ask (omit with --react to enter interactive conversation mode)')
     parser.add_argument('-r', '--retrieval', default='semantic', 
                        choices=['semantic', 'bm25', 'hybrid'], 
                        help='Retrieval strategy')
@@ -108,6 +127,11 @@ def main():
                        help='Quantization bits (4 or 8)')
     parser.add_argument('--no-prompt-cache', action='store_true',
                        help='Disable prompt caching')
+    parser.add_argument('--react', action='store_true',
+                       help='Use ReAct agent (LangGraph create_react_agent + bind_tools) '
+                            'instead of the default v1 orchestrator')
+    parser.add_argument('--session-id',
+                       help='Conversation session ID for --react mode (auto-generated if omitted)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging (DEBUG level)')
     parser.add_argument('--log-file', help='Log to file instead of console')
@@ -132,7 +156,11 @@ def main():
                        help='Filter by title (partial match, e.g., "transformer")')
     
     args = parser.parse_args()
-    
+
+    # -q is required unless using --react (which supports interactive mode)
+    if not args.react and not args.query:
+        parser.error("-q/--query is required when not using --react mode")
+
     # Building filters dictionary
     filters = {}
     if args.conference:
@@ -188,7 +216,7 @@ def main():
     logger = logging.getLogger(__name__)
     logger.info("="*60)
     logger.info("Starting Agentic RAG System")
-    logger.info(f"Query: {args.query}")
+    logger.info(f"Query: {args.query or '(interactive)'}")
     logger.info(f"Retrieval: {args.retrieval}, Model: {args.llm_model}")
     logger.info("="*60)
     
@@ -233,27 +261,78 @@ def main():
     
     # Get LLM from RAG chain for agents
     llm = rag_chain.llm
-    
-    # Initialize orchestrator
-    print("Initializing agentic orchestrator...")
-    logger.debug("Initializing agentic orchestrator")
-    orchestrator = AgenticRAGOrchestrator(rag_chain, llm)
-    
-    print(f"\nQuerying in agentic mode with {args.retrieval} retrieval strategy...")
-    
+
     logger.info("Starting query execution")
-    
-    # Execute query
+
     try:
-        for result in orchestrator.query(
-            question=args.query,
-            top_k=args.top_k,
-            filters=filters,
-            workflow=args.workflow,
-            max_iterations=args.max_iterations
-        ):
-            format_output(result)
-    
+        if args.react:
+            # ── ReAct agent (Phase 5) — conversational by default ──────────
+            print("Building ReAct agent (LangGraph create_react_agent)...")
+            agent = build_react_agent(rag_chain)
+
+            thread_id = args.session_id or str(uuid4())
+
+            def _run_turn(question: str) -> None:
+                # Sanitize before the query reaches the LLM
+                clean_q, flagged = sanitize_query(question)
+                if flagged:
+                    print("  [Warning] Potential injection pattern stripped from query.")
+                if clean_q != question:
+                    question = clean_q
+
+                for event in run_react_agent(agent, question, thread_id=thread_id):
+                    if event["type"] == "tool_call":
+                        print(f"  [Tool] {event['tool']}({event['args']})")
+                    elif event["type"] == "tool_result":
+                        print(f"  [Result] {event['result_preview'][:120]}...")
+                    elif event["type"] == "answer":
+                        answer = event["content"]
+                        print(f"\nAssistant: {answer}")
+                        _warn_if_no_citations(answer)
+                    elif event["type"] == "error":
+                        print(f"\n[Error] {event['error']}")
+
+            if args.query:
+                # Single-shot mode (scripting / non-interactive)
+                print(f"\nSession: {thread_id[:8]}... | retrieval: {args.retrieval}\n")
+                _run_turn(args.query)
+            else:
+                # Interactive conversational loop
+                print(f"\nReAct Agent ready  |  retrieval: {args.retrieval}  |  session: {thread_id[:8]}...")
+                print("Commands: 'quit' or 'exit' to stop, 'new' to start a fresh session.\n")
+                while True:
+                    try:
+                        user_input = input("You: ").strip()
+                    except (KeyboardInterrupt, EOFError):
+                        print("\nGoodbye.")
+                        break
+                    if not user_input:
+                        continue
+                    if user_input.lower() in ("quit", "exit", "q"):
+                        print("Goodbye.")
+                        break
+                    if user_input.lower() == "new":
+                        thread_id = str(uuid4())
+                        print(f"New session (ID: {thread_id[:8]}...)\n")
+                        continue
+                    _run_turn(user_input)
+                    print()
+
+        else:
+            # ── V1 orchestrator (original) ─────────────────────────────────
+            print("Initializing agentic orchestrator...")
+            orchestrator = AgenticRAGOrchestrator(rag_chain, llm)
+            print(f"\nQuerying in agentic mode with {args.retrieval} retrieval strategy...")
+
+            for result in orchestrator.query(
+                question=args.query,
+                top_k=args.top_k,
+                filters=filters,
+                workflow=args.workflow,
+                max_iterations=args.max_iterations
+            ):
+                format_output(result)
+
     except KeyboardInterrupt:
         logger.warning("Query interrupted by user")
         print("\n\nInterrupted by user.")
