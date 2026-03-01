@@ -20,7 +20,7 @@ class ConversationalRAGChain:
     
     def __init__(self, embedding_generator, retriever, llm_model, llm_provider,
         ollama_model = "qwen2:1.5b", use_quantization = True, quantization_bits = 4,
-        enable_prompt_cache = True):
+        enable_prompt_cache = True, use_llm_rewriting = False):
         """
         Initialize conversational RAG chain.
 
@@ -33,6 +33,7 @@ class ConversationalRAGChain:
             use_quantization: Quantization for memory efficiency
             quantization_bits: Quantization bits (4 or 8)
             enable_prompt_cache: Enable prompt caching for faster generation
+            use_llm_rewriting: Use LLM for complex coreference query rewriting
         """
 
         # Wrapping the existing RAGChain (composition, not modification)
@@ -46,8 +47,11 @@ class ConversationalRAGChain:
             quantization_bits=quantization_bits,
             enable_prompt_cache=enable_prompt_cache
         )
-        
-        self.query_rewriter = QueryRewriter()
+
+        self.query_rewriter = QueryRewriter(
+            use_llm_rewriting=use_llm_rewriting,
+            llm=self.rag_chain.llm if use_llm_rewriting else None,
+        )
         self.conversation_history: ConversationHistory = None
         self._discussed_papers: List[str] = []
         self._last_sources: List[dict] = []
