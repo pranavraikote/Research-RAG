@@ -7,12 +7,15 @@ This document outlines the development roadmap for ResearchRAG, an evidence-awar
 ResearchRAG is being developed incrementally, starting with traditional RAG and advancing through re-ranking, advanced chunking strategies, conversational enhancements, and finally to an agentic RAG version.
 
 **Technology Stack**:
-- **Framework**: LangChain
+- **Framework**: LangChain + LangGraph
 - **Vector Database**: FAISS (HNSW with M=32, efConstruction=64, FlatIP fallback)
 - **Embeddings**: BAAI/bge-base-en-v1.5 (768d, 512 max tokens)
 - **BM25**: bm25s (sparse matrices, mmap persistence)
 - **Reranker**: BAAI/bge-reranker-v2-m3 (568M params, multilingual SOTA)
 - **Chunking**: HybridStructuredChunker (section-aware, citation-aware, paragraph-based)
+- **LLM (local)**: ChatOllama (langchain-ollama) or ChatHuggingFace — both support bind_tools
+- **Agentic**: LangGraph create_react_agent + MemorySaver (conversational memory)
+- **Observability**: LangSmith (automatic tracing of all LangChain/LangGraph calls)
 - **Primary Data Source**: ACL Anthology
 - **Deployment**: Local CLI-based interface
 
@@ -80,13 +83,11 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 - [x] Multi-turn retrieval: follow-up detection, query boosting with discussed paper titles
 - [x] Conversation context injected into prompt; prompt caching (KV cache) for HuggingFace provider
 - [x] Interactive CLI mode (`conversation_main.py`) with session export/load support
-
-**Future**:
-- [ ] LLM-based query rewriting for complex coreference (stub exists, `use_llm_rewriting=False`)
+- [x] LLM-based query rewriting for complex coreference — heuristic pass runs first; LLM rewriting triggered only when unresolved pronouns/references remain
 
 ### Phase 5: Agentic RAG
 
-**Status**: Future
+**Status**: In Progress
 
 **Goal**: Build an agentic system that can reason across papers, compare findings, and identify gaps.
 
@@ -109,14 +110,23 @@ Sub-query 3: "Z evaluation results"    → results sections
 
 This is the key insight: basic chunking is forgiving of single-query retrieval because paragraphs co-locate related ideas. Adaptive chunking is the right design for high-quality generation, but it requires the retrieval layer to match its granularity — either via multi-query decomposition or iterative agent-driven retrieval.
 
-**Planned Features**:
-- [ ] Query decomposition — break complex multi-part queries into focused sub-queries before retrieval
-- [ ] Multi-query retrieval with RRF merge — parallel AdaptiveRetriever calls, one per sub-query
-- [ ] Multi-agent architecture (retriever, analyzer, comparator, synthesizer)
-- [ ] Cross-paper reasoning and comparison
-- [ ] Structured output generation (claims, evidence, limitations)
-- [ ] Gap detection in literature
-- [ ] Iterative refinement and follow-up question generation
+**Completed**:
+- [x] LangGraph `create_react_agent` with `bind_tools` — replaces custom two-agent orchestrator
+- [x] Three retrieval tools: `search_papers` (general hybrid), `search_papers_in_section` (section-filtered), `detect_relevant_sections` (query-to-section mapping)
+- [x] Retriever-agnostic tool layer — unified `_search()` routes correctly across HybridRetriever, SemanticRetriever, BM25Retriever
+- [x] Conversational memory via `MemorySaver` checkpointer — full message + tool history persisted per `thread_id`
+- [x] Interactive CLI with session management (`--session-id`, `new` command to start fresh thread)
+- [x] LangSmith tracing — automatic observability for all LangChain/LangGraph calls via env vars
+- [x] Both LLM backends support `bind_tools`: `ChatOllama` (langchain-ollama) and `ChatHuggingFace`
+- [x] Query decomposition — LLM (with heuristic fallback) breaks complex queries into focused sub-queries with section hints
+- [x] Multi-query retrieval with RRF merge — `search_papers_multi` tool runs sub-queries sequentially and fuses results via RRF before cross-encoder reranking
+- [x] Structured output — mandatory citation format `(Title, Conference Year)` enforced via system prompt; citation presence validated on every answer
+- [x] Prompt injection protection — user input sanitised before reaching LLM
+
+**Future**:
+- [ ] Parallel sub-query retrieval — currently sequential; parallelise with ThreadPoolExecutor once MPS thread-safety is confirmed
+- [ ] Cross-paper synthesis and contradiction detection — explicitly surface when papers disagree on a claim
+- [ ] Gap detection in literature — identify research questions unanswered by the corpus
 
 ## Data Sources
 
