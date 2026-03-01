@@ -1,8 +1,8 @@
 import time
 import torch
 
-from langchain_huggingface import HuggingFacePipeline
-from langchain_community.chat_models import ChatOllama
+from langchain_huggingface import HuggingFacePipeline, ChatHuggingFace
+from langchain_ollama import ChatOllama
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -163,8 +163,9 @@ class RAGChain:
                 pipe_kwargs["device"] = pipeline_device
             
             pipe = pipeline("text-generation", **pipe_kwargs)
-            
-            self.llm = HuggingFacePipeline(pipeline=pipe)
+
+            _hf_pipeline = HuggingFacePipeline(pipeline=pipe)
+            self.llm = ChatHuggingFace(llm=_hf_pipeline)
             self.tokenizer = tokenizer
             self.llm_model = llm_model
             self.model = model
@@ -463,7 +464,7 @@ class RAGChain:
             # Regular streaming
             full_prompt = f"{self.system_prompt}\n\n{user_message}"
             for chunk in self.llm.stream(full_prompt):
-                yield chunk.text if hasattr(chunk, 'text') else str(chunk)
+                yield chunk.content if hasattr(chunk, 'content') else str(chunk)
 
             return
         
@@ -535,7 +536,7 @@ class RAGChain:
             # Regular streaming
             full_prompt = f"{self.system_prompt}\n\n{user_message}"
             for chunk in self.llm.stream(full_prompt):
-                yield chunk.text if hasattr(chunk, 'text') else str(chunk)
+                yield chunk.content if hasattr(chunk, 'content') else str(chunk)
     
     def query(self, question, top_k = 5, initial_retrieval_k = 20, rerank_k = 3, filters = None, 
         auto_parse_filters = True):
@@ -622,7 +623,7 @@ class RAGChain:
             if self.prompt_cache_enabled and self.cached_prompt_kv_cache is not None:
                 token_stream = self._stream_with_cache(user_msg, max_new_tokens=1024)
             else:
-                token_stream = (chunk.text if hasattr(chunk, 'text') else str(chunk) 
+                token_stream = (chunk.content if hasattr(chunk, 'content') else str(chunk) 
                               for chunk in self.llm.stream(prompt))
             
             for token in token_stream:

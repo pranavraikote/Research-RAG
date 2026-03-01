@@ -50,7 +50,9 @@ def main():
         help = 'LLM provider (auto = try Ollama first, fall back to HuggingFace)')
     parser.add_argument('--ollama-model', default = 'qwen2:1.5b',
         help = 'Ollama model name (used when provider is auto or ollama)')
-    
+    parser.add_argument('--llm-rewriting', action = 'store_true',
+        help = 'Use LLM for complex coreference query rewriting (slower but more accurate)')
+
     args = parser.parse_args()
     
     # Initializing the EmbeddingGenerator
@@ -83,7 +85,8 @@ def main():
         llm_model = args.llm_model,
         llm_provider = args.llm_provider,
         ollama_model = args.ollama_model,
-        enable_prompt_cache = True
+        enable_prompt_cache = True,
+        use_llm_rewriting = args.llm_rewriting,
     )
     
     # Creating conversation history
