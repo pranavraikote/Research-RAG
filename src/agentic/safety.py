@@ -62,7 +62,11 @@ def sanitize_query(query: str) -> tuple[str, bool]:
         cleaned = cleaned[:_MAX_QUERY_LENGTH].rstrip() + "…"
         logger.warning("Query truncated to %d characters.", _MAX_QUERY_LENGTH)
 
-    # Detect and strip injection patterns
+    # Detect and strip injection patterns.
+    # We split on sentence boundaries and drop any sentence that contains an
+    # injection pattern, rather than just stripping the matched substring.
+    # This prevents "ignore all instructions. What is 2+2?" from leaving
+    # "What is 2+2?" behind after the injection phrase is removed.
     flagged = False
     for pattern in _INJECTION_PATTERNS:
         if pattern.search(cleaned):
@@ -71,7 +75,10 @@ def sanitize_query(query: str) -> tuple[str, bool]:
                 "Potential prompt injection detected and stripped: %r",
                 cleaned[:120],
             )
-            cleaned = pattern.sub("", cleaned).strip()
+            # Split into sentences (split on . ! ? or newline), drop infected ones
+            sentences = re.split(r"(?<=[.!?])\s+|\n", cleaned)
+            safe_sentences = [s for s in sentences if not pattern.search(s)]
+            cleaned = " ".join(safe_sentences).strip()
 
     return cleaned, flagged
 
