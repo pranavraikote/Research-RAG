@@ -24,8 +24,7 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 _VALID_SECTIONS = {
-    "abstract", "introduction", "related_work", "methods",
-    "experiments", "results", "discussion", "conclusion", "limitations", "general",
+    "methods", "results", "limitations", "conclusion", "general",
 }
 
 # ---------------------------------------------------------------------------
@@ -39,12 +38,18 @@ Break the user's research query into 1-4 focused sub-queries for targeted retrie
 Output format — numbered list, one sub-query per line:
 1. <sub-query text> [section:<section_type>]
 
-Section types: abstract, introduction, methods, results, limitations, conclusion, general
+Section types (use ONLY these five):
+  methods     — how something works, architecture, training procedure, algorithms
+  results     — performance numbers, benchmarks, metrics, comparisons
+  limitations — weaknesses, failure modes, drawbacks, open problems
+  conclusion  — findings, takeaways, future work
+  general     — everything else, or when the section is unclear
 
 Rules:
 - Simple, single-topic queries → output exactly 1 sub-query (restate it cleanly)
 - Complex queries (multiple aspects, comparisons, method+results) → split by aspect
 - Each sub-query must be fully self-contained and searchable on its own
+- When in doubt about section type, use [section:general]
 - Output ONLY the numbered list — no explanation, no preamble, nothing else"""
 
 _DECOMPOSE_HUMAN = "Query: {query}\n\nSub-queries:"
@@ -179,7 +184,7 @@ class QueryDecomposer:
         # Method + results present in the same query → split
         has_method = bool(re.search(r"\b(method|approach|architecture|model|technique|algorithm|training)\b", q))
         has_results = bool(re.search(r"\b(result|performance|benchmark|accuracy|metric|score|evaluation)\b", q))
-        has_limit = bool(re.search(r"\b(limitation|weakness|drawback|challenge|fail|problem)\b", q))
+        has_limit = bool(re.search(r"\b(limitations?|weaknesses?|drawbacks?|challenges?|fails?|problems?)\b", q))
 
         if has_method:
             sub_queries.append(SubQuery(query=query, section_hint="methods"))
