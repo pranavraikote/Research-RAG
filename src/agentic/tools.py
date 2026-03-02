@@ -22,11 +22,14 @@ from typing import List, Optional
 from langchain_core.tools import tool
 
 from .safety import sanitize_query, wrap_retrieved_content
+from src.retrieval.query_parser import QueryParser
 
 logger = logging.getLogger(__name__)
 
 _rag_chain = None
 _decomposer = None
+_corpus_has_sections: bool = False   # True only when chunks carry section_type metadata
+_query_parser = QueryParser()        # Extracts conference/year filters from natural language
 
 # Section keyword map — mirrors AdaptiveRetriever.SECTION_KEYWORDS so the tool
 # works regardless of which retriever backend is in use (Hybrid, BM25, Adaptive).
@@ -52,11 +55,34 @@ _SECTION_KEYWORDS: dict[str, list[str]] = {
 
 def set_rag_chain(rag_chain) -> None:
     """Inject the RAGChain instance and initialise the query decomposer."""
-    global _rag_chain, _decomposer
+    global _rag_chain, _decomposer, _corpus_has_sections
     _rag_chain = rag_chain
 
     from .decomposer import QueryDecomposer
     _decomposer = QueryDecomposer(llm=getattr(rag_chain, "llm", None), max_sub_queries=4)
+
+    # Probe corpus for section_type metadata — used to decide whether section
+    # filters are worth applying. Basic chunks lack this; adaptive chunks have it.
+    try:
+        import json
+        chunks_path = getattr(rag_chain.retriever, "chunks_path", None)
+        if chunks_path is None:
+            # HybridRetriever — try the inner semantic retriever
+            chunks_path = getattr(
+                getattr(rag_chain.retriever, "semantic_retriever", None), "chunks_path", None
+            )
+        if chunks_path:
+            with open(chunks_path) as f:
+                sample = json.load(f)
+            items = sample if isinstance(sample, list) else list(sample.values())
+            _corpus_has_sections = any(
+                isinstance(c, dict) and c.get("metadata", {}).get("section_type")
+                for c in items[:200]          # only probe first 200 chunks
+            )
+            logger.info("Corpus section_type support: %s (path=%s)", _corpus_has_sections, chunks_path)
+    except Exception as exc:
+        logger.warning("Could not probe corpus for section_type: %s", exc)
+        _corpus_has_sections = False
 
 
 # ---------------------------------------------------------------------------
@@ -71,25 +97,43 @@ def _search(query: str, top_k: int, filters: Optional[dict] = None) -> list:
       - HybridRetriever:  search(query, query_embedding, top_k, filters)
       - SemanticRetriever: search(query_embedding, top_k, filters)
       - BM25Retriever / AdaptiveRetriever: search(query, top_k, filters)
+
+    Metadata filters (conference, year) are automatically extracted from the query
+    text via QueryParser and merged with any explicit filters passed in.
+    Explicit filters take precedence on key conflicts.
     """
     # Sanitize before hitting the retriever
     clean_query, flagged = sanitize_query(query)
     if flagged:
         logger.warning("Sanitized query before retrieval: %r → %r", query[:80], clean_query[:80])
 
+    # Auto-extract metadata filters (conference, year) from the query text.
+    # e.g. "Any from EMNLP?" → {"conference": "EMNLP"}
+    _, auto_filters = _query_parser.parse(clean_query)
+
+    # Merge: auto-extracted as base, explicit caller filters override on conflict.
+    # This lets section_type filters from search_papers_in_section coexist with
+    # conference/year filters inferred from the query string.
+    if auto_filters:
+        merged_filters = {**auto_filters, **(filters or {})}
+        if merged_filters != (filters or {}):
+            logger.debug("Auto-extracted metadata filters: %s", auto_filters)
+    else:
+        merged_filters = filters
+
     retriever = _rag_chain.retriever
     retriever_type = type(retriever).__name__
 
     if retriever_type == "HybridRetriever":
         embedding = _rag_chain.embedding_generator.embed_query(clean_query)
-        return retriever.search(clean_query, embedding, top_k=top_k, filters=filters)
+        return retriever.search(clean_query, embedding, top_k=top_k, filters=merged_filters)
 
     if retriever_type == "SemanticRetriever":
         embedding = _rag_chain.embedding_generator.embed_query(clean_query)
-        return retriever.search(embedding, top_k=top_k, filters=filters)
+        return retriever.search(embedding, top_k=top_k, filters=merged_filters)
 
     # BM25Retriever, AdaptiveRetriever — query string only
-    return retriever.search(clean_query, top_k=top_k, filters=filters)
+    return retriever.search(clean_query, top_k=top_k, filters=merged_filters)
 
 
 def _rrf_merge(result_lists: List[List[dict]], top_k: int, k: int = 60) -> List[dict]:
@@ -211,12 +255,24 @@ def search_papers_in_section(query: str, section_type: str, top_k: int = 5) -> s
     if section_type not in valid_sections:
         return f"Invalid section_type '{section_type}'. Choose from: {', '.join(sorted(valid_sections))}"
 
-    filters = {"section_type": [section_type]}
+    # Section filters only work on adaptive chunks that carry section_type metadata.
+    # When the corpus uses basic chunks (no metadata), fall back to unfiltered search
+    # so the tool still returns useful results instead of an empty set.
+    if _corpus_has_sections:
+        filters = {"section_type": [section_type]}
+    else:
+        filters = None
+        logger.info(
+            "search_papers_in_section: corpus has no section_type metadata — "
+            "falling back to unfiltered search for section '%s'", section_type
+        )
+
     chunks = _search(query, top_k=top_k * 3, filters=filters)
     if not chunks:
-        return f"No results found in section '{section_type}'."
+        return f"No results found for '{query}'."
     reranked = _rag_chain.reranker.rerank(query, chunks, top_k=top_k)
-    return _format_chunks(reranked, query, label=f"[{section_type}]")
+    label = f"[{section_type}]" if _corpus_has_sections else f"[unfiltered — no section metadata]"
+    return _format_chunks(reranked, query, label=label)
 
 
 @tool
@@ -256,9 +312,12 @@ def search_papers_multi(query: str, top_k: int = 5) -> str:
     )
 
     # --- Retrieve per sub-query ---
+    # Only apply section_type filters when the corpus actually carries that metadata
+    # (adaptive chunks do; basic chunks do not — filtering on missing field = 0 results)
     all_result_lists: List[List[dict]] = []
     for sq in sub_queries:
-        filters = {"section_type": [sq.section_hint]} if sq.section_hint and sq.section_hint != "general" else None
+        use_section = _corpus_has_sections and sq.section_hint and sq.section_hint != "general"
+        filters = {"section_type": [sq.section_hint]} if use_section else None
         results = _search(sq.query, top_k=top_k * 3, filters=filters)
         if results:
             all_result_lists.append(results)
