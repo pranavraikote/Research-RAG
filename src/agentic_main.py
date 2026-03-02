@@ -1,4 +1,5 @@
 import argparse
+import signal
 import sys
 import logging
 from pathlib import Path
@@ -6,6 +7,8 @@ from uuid import uuid4
 
 # Adding parent directory to path for direct execution
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from langchain_core.messages import HumanMessage
 
 from src.embeddings import EmbeddingGenerator
 from src.rag_chain import RAGChain
@@ -15,6 +18,15 @@ from src.retrieval.hybrid import HybridRetriever
 from src.agentic.orchestrator import AgenticRAGOrchestrator
 from src.agentic.react_agent import build_react_agent, run_react_agent
 from src.agentic.safety import sanitize_query
+
+_SESSION_COUNTER = 0   # increments with each "new" command
+
+
+def _resolve_bm25_path(index_path: str) -> str:
+    """Return the correct BM25 index path sibling to the given FAISS index path."""
+    parent = Path(index_path).parent
+    name = "adaptive_bm25" if "adaptive" in Path(index_path).name else "bm25_index"
+    return str(parent / name)
 
 
 def format_output(result: dict):
@@ -139,13 +151,18 @@ def main():
                        help='Show the actual prompts sent to LLM (very verbose)')
     
     project_root = Path(__file__).parent.parent
-    default_index = str(project_root / "artifacts/faiss_index")
-    default_chunks = str(project_root / "artifacts/chunks.json")
-    
-    parser.add_argument('--index-path', default=default_index, 
-                       help='Path to FAISS index')
-    parser.add_argument('--chunks-path', default=default_chunks, 
-                       help='Path to chunks JSON file')
+    # Prefer adaptive indices (152K section-aware chunks) when available
+    _adaptive_index  = project_root / "artifacts/adaptive_faiss_index"
+    _adaptive_chunks = project_root / "artifacts/adaptive_chunks.json"
+    _basic_index     = project_root / "artifacts/faiss_index"
+    _basic_chunks    = project_root / "artifacts/chunks.json"
+    default_index  = str(_adaptive_index  if _adaptive_index.exists()  else _basic_index)
+    default_chunks = str(_adaptive_chunks if _adaptive_chunks.exists() else _basic_chunks)
+
+    parser.add_argument('--index-path', default=default_index,
+                       help='Path to FAISS index (default: adaptive if available)')
+    parser.add_argument('--chunks-path', default=default_chunks,
+                       help='Path to chunks JSON file (default: adaptive if available)')
     
     # Metadata filtering options
     parser.add_argument('--conference', 
@@ -234,10 +251,10 @@ def main():
             metric=args.metric
         )
     elif args.retrieval == 'bm25':
-        bm25_index_path = str(Path(args.index_path).parent / "bm25_index")
+        bm25_index_path = _resolve_bm25_path(args.index_path)
         retriever = BM25Retriever(chunks_path=args.chunks_path, index_path=bm25_index_path)
     elif args.retrieval == 'hybrid':
-        bm25_index_path = str(Path(args.index_path).parent / "bm25_index")
+        bm25_index_path = _resolve_bm25_path(args.index_path)
         semantic_ret = SemanticRetriever(
             index_path=args.index_path,
             chunks_path=args.chunks_path,
@@ -267,39 +284,105 @@ def main():
     try:
         if args.react:
             # ── ReAct agent (Phase 5) — conversational by default ──────────
+            global _SESSION_COUNTER
+
             print("Building ReAct agent (LangGraph create_react_agent)...")
             agent = build_react_agent(rag_chain)
 
+            # Warm up Ollama: load the model into memory before the first real query
+            print("Warming up LLM...", end=" ", flush=True)
+            try:
+                rag_chain.llm.invoke([HumanMessage(content="hi")])
+                print("ready.")
+            except Exception:
+                print("(skipped)")
+
+            _SESSION_COUNTER += 1
             thread_id = args.session_id or str(uuid4())
+            session_label = f"session-{_SESSION_COUNTER}"
+
+            # ── Per-query timeout (90 s) using SIGALRM (Unix/macOS) ─────────
+            _QUERY_TIMEOUT = 90
+
+            def _timeout_handler(signum, frame):
+                raise TimeoutError(f"No response after {_QUERY_TIMEOUT}s — Ollama may be overloaded.")
+
+            if hasattr(signal, "SIGALRM"):
+                signal.signal(signal.SIGALRM, _timeout_handler)
 
             def _run_turn(question: str) -> None:
                 # Sanitize before the query reaches the LLM
                 clean_q, flagged = sanitize_query(question)
                 if flagged:
-                    print("  [Warning] Potential injection pattern stripped from query.")
-                if clean_q != question:
-                    question = clean_q
+                    print("  [!] Injection pattern detected and stripped.")
+                question = clean_q
 
-                for event in run_react_agent(agent, question, thread_id=thread_id):
-                    if event["type"] == "tool_call":
-                        print(f"  [Tool] {event['tool']}({event['args']})")
-                    elif event["type"] == "tool_result":
-                        print(f"  [Result] {event['result_preview'][:120]}...")
-                    elif event["type"] == "answer":
-                        answer = event["content"]
-                        print(f"\nAssistant: {answer}")
-                        _warn_if_no_citations(answer)
-                    elif event["type"] == "error":
-                        print(f"\n[Error] {event['error']}")
+                # Arm timeout
+                if hasattr(signal, "SIGALRM"):
+                    signal.alarm(_QUERY_TIMEOUT)
+
+                try:
+                    _streaming = False   # tracks whether we've started printing tokens
+                    _answer_buf = ""
+
+                    for event in run_react_agent(agent, question, thread_id=thread_id):
+                        etype = event["type"]
+
+                        if etype == "tool_call":
+                            # Friendly one-liner instead of raw dict dump
+                            tool = event["tool"]
+                            args_dict = event["args"]
+                            q_text = args_dict.get("query", "")
+                            section = args_dict.get("section_type", "")
+                            if q_text:
+                                display = f'  [Searching] "{q_text}"'
+                                if section:
+                                    display += f"  [section: {section}]"
+                            else:
+                                display = f"  [{tool}]"
+                            print(display)
+
+                        elif etype == "tool_result":
+                            preview = event["result_preview"].replace("\n", " ")[:100]
+                            print(f"  [Retrieved] {preview}…")
+
+                        elif etype == "token":
+                            if not _streaming:
+                                print("\nAssistant: ", end="", flush=True)
+                                _streaming = True
+                            print(event["content"], end="", flush=True)
+                            _answer_buf += event["content"]
+
+                        elif etype == "answer":
+                            # Full answer for citation check; tokens already printed
+                            _answer_buf = event["content"]
+                            if not _streaming:
+                                print(f"\nAssistant: {_answer_buf}")
+                            else:
+                                print()   # newline after last token
+
+                        elif etype == "error":
+                            print(f"\n[Error] {event['error']}")
+
+                    _warn_if_no_citations(_answer_buf)
+
+                except TimeoutError as te:
+                    print(f"\n[Timeout] {te}")
+                finally:
+                    if hasattr(signal, "SIGALRM"):
+                        signal.alarm(0)   # disarm
 
             if args.query:
-                # Single-shot mode (scripting / non-interactive)
-                print(f"\nSession: {thread_id[:8]}... | retrieval: {args.retrieval}\n")
+                # Single-shot mode
+                print(f"\n{session_label}  |  retrieval: {args.retrieval}\n")
                 _run_turn(args.query)
+                info = embedding_gen.cache_info()
+                if info:
+                    print(f"\n[Embed cache] hits={info.hits}  misses={info.misses}  cached={info.currsize}/{info.maxsize}")
             else:
                 # Interactive conversational loop
-                print(f"\nReAct Agent ready  |  retrieval: {args.retrieval}  |  session: {thread_id[:8]}...")
-                print("Commands: 'quit' or 'exit' to stop, 'new' to start a fresh session.\n")
+                print(f"\nReAct Agent ready  |  {session_label}  |  retrieval: {args.retrieval}")
+                print("Commands: 'quit'/'exit' to stop, 'new' for a fresh session.\n")
                 while True:
                     try:
                         user_input = input("You: ").strip()
@@ -309,11 +392,16 @@ def main():
                     if not user_input:
                         continue
                     if user_input.lower() in ("quit", "exit", "q"):
+                        info = embedding_gen.cache_info()
+                        if info:
+                            print(f"[Embed cache] hits={info.hits}  misses={info.misses}  cached={info.currsize}/{info.maxsize}")
                         print("Goodbye.")
                         break
                     if user_input.lower() == "new":
+                        _SESSION_COUNTER += 1
                         thread_id = str(uuid4())
-                        print(f"New session (ID: {thread_id[:8]}...)\n")
+                        session_label = f"session-{_SESSION_COUNTER}"
+                        print(f"New session started: {session_label}\n")
                         continue
                     _run_turn(user_input)
                     print()
