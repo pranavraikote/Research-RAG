@@ -1,6 +1,6 @@
 # ResearchRAG
 
-Evidence-aware RAG system for querying ACL Anthology research papers with cited answers.
+Evidence-aware RAG system for querying ACL Anthology research papers with cited, section-targeted answers — designed for domain-specific retrieval where generic copilots fall short. Runs fully local (no data egress, GDPR-friendly).
 
 ## Features
 
@@ -11,7 +11,7 @@ Evidence-aware RAG system for querying ACL Anthology research papers with cited 
 - **Conversational** — Multi-turn history, heuristic + LLM query rewriting, pronoun/citation reference resolution
 - **Agentic** — LangGraph ReAct agent with query decomposition, multi-query RRF retrieval, citation enforcement, prompt injection protection, and conversational memory (MemorySaver)
 - **Observability** — LangSmith tracing (automatic for all LangChain/LangGraph calls via env vars)
-- **Evaluation** — Human-labeled precision eval (MRR, P@K, nDCG@10) and latency benchmarks — see [EVAL.md](EVAL.md)
+- **Evaluation** — Human-labeled precision eval (MRR, P@K, nDCG@10), latency benchmarks, and 18-turn conversational agent eval — see [EVAL.md](EVAL.md)
 
 ## Quick Start
 
