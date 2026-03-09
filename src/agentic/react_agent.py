@@ -24,7 +24,7 @@ Usage
 
 from __future__ import annotations
 
-from typing import Generator
+from typing import Generator, Tuple
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -187,3 +187,60 @@ def run_react_agent(agent, question: str, thread_id: str = "default") -> Generat
 
     except Exception as exc:  # noqa: BLE001
         yield {"type": "error", "error": str(exc)}
+
+
+_REFLECTION_PROMPT = """\
+You are a strict quality reviewer for a research assistant. Your job is to catch only \
+HARD FAILURES — not style issues, not "could be better" feedback.
+
+Question: {question}
+
+Draft Answer:
+{answer}
+
+Flag ISSUES FOUND: yes ONLY if the answer has at least one of these hard failures:
+1. ZERO CITATIONS — the answer makes factual claims about papers but contains NO citations \
+at all (no conference names, no years, no paper titles). Partial citations like \
+"(Conference Year)" are acceptable — do NOT flag these.
+2. EXPLICIT HALLUCINATION — the answer uses phrases like "I believe", "I think", \
+"according to my training", "generally speaking" to state facts not from the papers.
+3. COMPLETE NO-SEARCH — the answer explicitly says it cannot find information but \
+the question is clearly answerable from research papers (not an out-of-corpus question).
+
+Do NOT flag for:
+- Claims that could use more citations (partial citations are fine)
+- Synthesis across papers (this is expected behaviour)
+- Answers that correctly say "not found in corpus" for out-of-corpus questions
+- Style, structure, or completeness issues
+
+Respond in this exact format:
+ISSUES FOUND: yes/no
+CRITIQUE: [one bullet per hard failure found, or "None" if no hard failures]"""
+
+
+def reflect_on_answer(llm, question: str, answer: str) -> Tuple[str, bool]:
+    """
+    Critique a draft answer for citation gaps and unsupported claims.
+
+    Makes a single LLM call. Returns (critique, needs_revision).
+
+    Args:
+        llm: LangChain chat model.
+        question: Original user question.
+        answer: Draft answer to evaluate.
+
+    Returns:
+        Tuple of (critique text, bool indicating whether revision is needed).
+    """
+    prompt = _REFLECTION_PROMPT.format(question=question, answer=answer[:2000])
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+        content = response.content if hasattr(response, "content") else str(response)
+    except Exception:
+        return "Reflection unavailable.", False
+
+    needs_revision = "issues found: yes" in content.lower()
+    critique = ""
+    if "CRITIQUE:" in content:
+        critique = content.split("CRITIQUE:", 1)[1].strip()
+    return critique, needs_revision

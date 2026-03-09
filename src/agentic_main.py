@@ -16,7 +16,7 @@ from src.retrieval.semantic import SemanticRetriever
 from src.retrieval.bm25 import BM25Retriever
 from src.retrieval.hybrid import HybridRetriever
 from src.agentic.orchestrator import AgenticRAGOrchestrator
-from src.agentic.react_agent import build_react_agent, run_react_agent
+from src.agentic.react_agent import build_react_agent, run_react_agent, reflect_on_answer
 from src.agentic.safety import sanitize_query
 from src.agentic.semantic_cache import SemanticCache
 
@@ -143,6 +143,8 @@ def main():
     parser.add_argument('--react', action='store_true',
                        help='Use ReAct agent (LangGraph create_react_agent + bind_tools) '
                             'instead of the default v1 orchestrator')
+    parser.add_argument('--reflect', action='store_true',
+                       help='Enable reflection: critique the draft answer and revise if issues found')
     parser.add_argument('--session-id',
                        help='Conversation session ID for --react mode (auto-generated if omitted)')
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -315,7 +317,7 @@ def main():
             if hasattr(signal, "SIGALRM"):
                 signal.signal(signal.SIGALRM, _timeout_handler)
 
-            def _run_turn(question: str) -> None:
+            def _run_turn(question: str, reflect: bool = False) -> None:
                 # Sanitize before the query reaches the LLM
                 clean_q, flagged = sanitize_query(question)
                 if flagged:
@@ -385,6 +387,53 @@ def main():
 
                     _warn_if_no_citations(_answer_buf)
 
+                    # ── Reflection pass ──────────────────────────────────────
+                    # One extra LLM call to critique the draft answer.
+                    # If issues are found, re-run the agent with the critique
+                    # embedded so it searches again and revises.
+                    if reflect and _answer_buf:
+                        print("\n  [Reflecting on answer...]")
+                        critique, needs_revision = reflect_on_answer(
+                            rag_chain.llm, question, _answer_buf
+                        )
+                        if needs_revision:
+                            print(f"  [Revision needed] {critique[:200]}")
+                            revised_question = (
+                                f"{question}\n\n"
+                                f"[REFLECTION] Your previous answer had issues:\n{critique}\n"
+                                f"Please search again and provide an improved answer that addresses these issues."
+                            )
+                            # Reset streaming state for the revised answer
+                            _streaming = False
+                            _answer_buf = ""
+                            for event in run_react_agent(agent, revised_question, thread_id=thread_id):
+                                etype = event["type"]
+                                if etype == "tool_call":
+                                    args_dict = event["args"]
+                                    q_text = args_dict.get("query", "")
+                                    section = args_dict.get("section_type", "")
+                                    display = f'  [Re-searching] "{q_text}"' if q_text else f"  [{event['tool']}]"
+                                    if section:
+                                        display += f"  [section: {section}]"
+                                    print(display)
+                                elif etype == "token":
+                                    if not _streaming:
+                                        print("\nAssistant (revised): ", end="", flush=True)
+                                        _streaming = True
+                                    print(event["content"], end="", flush=True)
+                                    _answer_buf += event["content"]
+                                elif etype == "answer":
+                                    _answer_buf = event["content"]
+                                    if not _streaming:
+                                        print(f"\nAssistant (revised): {_answer_buf}")
+                                    else:
+                                        print()
+                                elif etype == "error":
+                                    print(f"\n[Error during revision] {event['error']}")
+                            _warn_if_no_citations(_answer_buf)
+                        else:
+                            print("  [Reflection] Answer looks good — no revision needed.")
+
                     # Store in semantic cache if the question was cacheable
                     if _query_emb is not None and _answer_buf:
                         _sem_cache.put(question, _query_emb, _answer_buf)
@@ -398,7 +447,7 @@ def main():
             if args.query:
                 # Single-shot mode
                 print(f"\n{session_label}  |  retrieval: {args.retrieval}\n")
-                _run_turn(args.query)
+                _run_turn(args.query, reflect=args.reflect)
                 info = embedding_gen.cache_info()
                 if info:
                     print(f"\n[Embed cache] hits={info.hits}  misses={info.misses}  cached={info.currsize}/{info.maxsize}")
@@ -433,7 +482,7 @@ def main():
                         session_label = f"session-{_SESSION_COUNTER}"
                         print(f"New session started: {session_label}\n")
                         continue
-                    _run_turn(user_input)
+                    _run_turn(user_input, reflect=args.reflect)
                     print()
 
         else:
