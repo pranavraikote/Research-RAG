@@ -1,12 +1,10 @@
 """
-Agentic RAG Orchestrator
-
-Coordinates simplified two-agent workflow: Retriever + Reasoner.
+Agentic RAG orchestrator — coordinates the v1 two-agent workflow (Retriever + Reasoner).
 """
 
-import time
 import logging
-from typing import Dict, List, Any, Optional, Generator
+import time
+from typing import Any, Dict, Generator, List, Optional
 
 from .retriever_agent import RetrieverAgent
 from .reasoner_agent import ReasonerAgent
@@ -15,183 +13,117 @@ logger = logging.getLogger(__name__)
 
 
 class AgenticRAGOrchestrator:
-    
+
     def __init__(self, rag_chain, llm):
         """
-        Initialize orchestrator with agents function.
-        
         Args:
-            rag_chain: RAGChain instance for retrieval
-            llm: Language model for all agents
+            rag_chain: RAGChain instance for retrieval.
+            llm: Language model for all agents.
         """
-        
         self.rag_chain = rag_chain
         self.llm = llm
-        
-        # Initialize simplified two-agent system
         self.retriever_agent = RetrieverAgent(rag_chain, llm)
         self.reasoner_agent = ReasonerAgent(llm)
-        
-        self.execution_history = []
-    
-    def _determine_workflow(self, query, context):
-        """
-        Determine which workflow pattern to use based on query function.
-        
-        Args:
-            query: User query string
-            context: Context dictionary
-            
-        Returns:
-            Workflow pattern name (simplified: comparison, synthesis, or general)
-        """
-        
-        query_lower = query.lower()
-        
-        # Check for comparison keywords
-        if any(word in query_lower for word in ["compare", "comparison", "versus", "vs", "difference", "similar", "contrast"]):
+        self.execution_history: List[Dict[str, Any]] = []
+
+    def _determine_workflow(self, query: str) -> str:
+        """Return workflow name based on keywords in the query."""
+        q = query.lower()
+        if any(w in q for w in ["compare", "comparison", "versus", "vs", "difference", "similar", "contrast"]):
             return "comparison"
-        
-        # Check for gap detection/synthesis keywords
-        if any(word in query_lower for word in ["gap", "missing", "unanswered", "future research", "limitation", "synthesize"]):
+        if any(w in q for w in ["gap", "missing", "unanswered", "future research", "limitation", "synthesize"]):
             return "synthesis"
-        
-        # Default: general reasoning
         return "general"
-    
-    def query(self, question, top_k = 5, filters = None, workflow = None, max_iterations = 3):
+
+    def query(
+        self,
+        question: str,
+        top_k: int = 5,
+        filters: Optional[Dict] = None,
+        workflow: Optional[str] = None,
+        max_iterations: int = 3,
+    ) -> Generator[Dict[str, Any], None, None]:
         """
-        Execute agentic query with multi-agent workflow function.
-        
+        Execute an agentic query and yield progress + final result dicts.
+
         Args:
-            question: User query
-            top_k: Number of papers to retrieve
-            filters: Metadata filters
-            workflow: Workflow pattern (auto-determined if None)
-            max_iterations: Maximum iterations for iterative refinement
-            
+            question: User query.
+            top_k: Number of papers to retrieve per iteration.
+            filters: Metadata filters (conference, year, title).
+            workflow: Workflow pattern; auto-determined if None.
+            max_iterations: Maximum retrieval-reasoning iterations.
+
         Yields:
-            Progress updates and final results
+            Dicts with a 'type' key: workflow, iteration, agent, retrieval,
+            reasoning, refinement, complete, or error.
         """
         start_time = time.time()
-        context = {
+        context: Dict[str, Any] = {
             "query": question,
             "top_k": top_k,
             "filters": filters,
             "retrieval": {},
-            "reasoning": {}
+            "reasoning": {},
         }
-        
-        # Determine workflow
+
         if workflow is None:
-            workflow = self._determine_workflow(question, context)
-            logger.info(f"Auto-determined workflow: {workflow} for query: {question[:50]}...")
+            workflow = self._determine_workflow(question)
+            logger.info("Auto-determined workflow: %s  query: %s...", workflow, question[:50])
         else:
-            logger.info(f"Using specified workflow: {workflow}")
-        
-        yield {
-            "type": "workflow",
-            "workflow": workflow,
-            "message": f"Using {workflow} workflow pattern"
-        }
-        
-        iteration = 0
-        while iteration < max_iterations:
-            iteration += 1
-            
-            yield {
-                "type": "iteration",
-                "iteration": iteration,
-                "message": f"Starting iteration {iteration}"
-            }
-            
-            # Step 1: Retrieval
-            logger.info(f"[Iteration {iteration}] Starting retrieval phase")
-            yield {
-                "type": "agent",
-                "agent": "RetrieverAgent",
-                "message": "Retrieving relevant papers..."
-            }
-            
+            logger.info("Using specified workflow: %s", workflow)
+
+        yield {"type": "workflow", "workflow": workflow, "message": f"Using {workflow} workflow pattern"}
+
+        for iteration in range(1, max_iterations + 1):
+            yield {"type": "iteration", "iteration": iteration, "message": f"Starting iteration {iteration}"}
+
+            # Retrieval
+            logger.info("[Iteration %d] Retrieval phase", iteration)
+            yield {"type": "agent", "agent": "RetrieverAgent", "message": "Retrieving relevant papers..."}
+
             retrieval_start = time.time()
-            retrieval_result = self.retriever_agent.execute(
-                task=question,
-                context=context
-            )
-            retrieval_time = time.time() - retrieval_start
+            retrieval_result = self.retriever_agent.execute(task=question, context=context)
+            logger.info("[Iteration %d] Retrieval: %d chunks in %.2fs",
+                        iteration, retrieval_result.get("count", 0), time.time() - retrieval_start)
             context["retrieval"] = retrieval_result
-            
-            chunks_count = retrieval_result.get("count", 0)
-            logger.info(f"[Iteration {iteration}] Retrieval completed: {chunks_count} chunks in {retrieval_time:.2f}s")
-            
-            yield {
-                "type": "retrieval",
-                "results": retrieval_result,
-                "chunks_count": chunks_count
-            }
-            
-            if chunks_count == 0:
-                logger.warning(f"[Iteration {iteration}] No papers retrieved for query: {question}")
-                yield {
-                    "type": "error",
-                    "message": "No papers retrieved. Try a different query."
-                }
+
+            if retrieval_result.get("count", 0) == 0:
+                logger.warning("[Iteration %d] No papers retrieved", iteration)
+                yield {"type": "error", "message": "No papers retrieved. Try a different query."}
                 return
-            
-            # Step 2: Reasoning (replaces Analysis + Comparison + Synthesis)
-            logger.info(f"[Iteration {iteration}] Starting reasoning phase")
-            yield {
-                "type": "agent",
-                "agent": "ReasonerAgent",
-                "message": "Reasoning over papers..."
-            }
-            
-            chunks = retrieval_result.get("chunks", [])
-            
+
+            yield {"type": "retrieval", "results": retrieval_result, "chunks_count": retrieval_result["count"]}
+
+            # Reasoning
+            logger.info("[Iteration %d] Reasoning phase", iteration)
+            yield {"type": "agent", "agent": "ReasonerAgent", "message": "Reasoning over papers..."}
+
             reasoning_start = time.time()
             reasoning_result = self.reasoner_agent.execute(
                 task=question,
-                context={"chunks": chunks, "query": question}
+                context={"chunks": retrieval_result.get("chunks", []), "query": question},
             )
-            reasoning_time = time.time() - reasoning_start
+            logger.info("[Iteration %d] Reasoning: task_type=%s  gaps=%d  %.2fs",
+                        iteration, reasoning_result.get("task_type", "general"),
+                        len(reasoning_result.get("gaps", [])),
+                        time.time() - reasoning_start)
             context["reasoning"] = reasoning_result
-            
-            task_type = reasoning_result.get("task_type", "general")
-            gaps_count = len(reasoning_result.get("gaps", []))
-            questions_count = len(reasoning_result.get("followup_questions", []))
-            logger.info(f"[Iteration {iteration}] Reasoning completed in {reasoning_time:.2f}s (task_type={task_type}, gaps={gaps_count}, questions={questions_count})")
-            
-            yield {
-                "type": "reasoning",
-                "results": reasoning_result,
-                "task_type": task_type
-            }
-            
-            # Check if we need another iteration (gap detected that needs more retrieval)
-            gaps = reasoning_result.get("gaps", [])
-            if gaps and iteration < max_iterations:
-                # Generate refined query based on gaps
-                followup_questions = reasoning_result.get("followup_questions", [])
-                if followup_questions:
-                    question = followup_questions[0]  # Use first follow-up question
-                    yield {
-                        "type": "refinement",
-                        "message": f"Gap detected. Refining query: {question}",
-                        "new_query": question
-                    }
-                    continue
-            
-            # No more iterations needed
+
+            yield {"type": "reasoning", "results": reasoning_result, "task_type": reasoning_result.get("task_type", "general")}
+
+            # Refine if gaps remain and iterations are available
+            followup = reasoning_result.get("followup_questions", [])
+            if reasoning_result.get("gaps") and iteration < max_iterations and followup:
+                question = followup[0]
+                yield {"type": "refinement", "message": f"Gap detected. Refining query.", "new_query": question}
+                continue
+
             break
-        
-        # Final result
+
         total_time = time.time() - start_time
-        
-        logger.info(f"Query completed: {iteration} iteration(s) in {total_time:.2f}s")
-        logger.debug(f"Final context keys: {list(context.keys())}")
-        
         reasoning_result = context.get("reasoning", {})
-        
+        logger.info("Query completed: %d iteration(s) in %.2fs", iteration, total_time)
+
         yield {
             "type": "complete",
             "question": question,
@@ -203,17 +135,12 @@ class AgenticRAGOrchestrator:
             "answer": reasoning_result.get("answer", ""),
             "gaps": reasoning_result.get("gaps", []),
             "followup_questions": reasoning_result.get("followup_questions", []),
-            "task_type": reasoning_result.get("task_type", "general")
+            "task_type": reasoning_result.get("task_type", "general"),
         }
-        
-        # Store in history
+
         self.execution_history.append({
             "question": question,
             "workflow": workflow,
             "iterations": iteration,
             "total_time": total_time,
-            "context": context
         })
-        
-        logger.debug(f"Execution history now has {len(self.execution_history)} entries")
-

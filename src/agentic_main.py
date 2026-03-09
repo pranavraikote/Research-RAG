@@ -18,6 +18,7 @@ from src.retrieval.hybrid import HybridRetriever
 from src.agentic.orchestrator import AgenticRAGOrchestrator
 from src.agentic.react_agent import build_react_agent, run_react_agent
 from src.agentic.safety import sanitize_query
+from src.agentic.semantic_cache import SemanticCache
 
 _SESSION_COUNTER = 0   # increments with each "new" command
 
@@ -301,6 +302,10 @@ def main():
             thread_id = args.session_id or str(uuid4())
             session_label = f"session-{_SESSION_COUNTER}"
 
+            # Semantic cache: skip the full agent round-trip (~14-16s) when a
+            # semantically similar question was already answered this session.
+            _sem_cache = SemanticCache(maxsize=128, threshold=0.92)
+
             # ── Per-query timeout (90 s) using SIGALRM (Unix/macOS) ─────────
             _QUERY_TIMEOUT = 90
 
@@ -316,6 +321,20 @@ def main():
                 if flagged:
                     print("  [!] Injection pattern detected and stripped.")
                 question = clean_q
+
+                # ── Semantic cache check ─────────────────────────────────────
+                # Embed the question to probe the cache.  Context-dependent
+                # questions (those/that/they/…) are excluded — their answers
+                # rely on prior turns and cannot be safely reused.
+                _query_emb = None
+                if _sem_cache.is_cacheable(question):
+                    _query_emb = embedding_gen.embed_query(question)
+                    cached = _sem_cache.get(_query_emb)
+                    if cached is not None:
+                        print(f"\nAssistant: {cached}")
+                        print("  [Semantic cache hit]")
+                        _warn_if_no_citations(cached)
+                        return
 
                 # Arm timeout
                 if hasattr(signal, "SIGALRM"):
@@ -366,6 +385,10 @@ def main():
 
                     _warn_if_no_citations(_answer_buf)
 
+                    # Store in semantic cache if the question was cacheable
+                    if _query_emb is not None and _answer_buf:
+                        _sem_cache.put(question, _query_emb, _answer_buf)
+
                 except TimeoutError as te:
                     print(f"\n[Timeout] {te}")
                 finally:
@@ -379,6 +402,8 @@ def main():
                 info = embedding_gen.cache_info()
                 if info:
                     print(f"\n[Embed cache] hits={info.hits}  misses={info.misses}  cached={info.currsize}/{info.maxsize}")
+                sc = _sem_cache.info()
+                print(f"[Semantic cache] checks={sc['total_checks']}  hits={sc['total_hits']}  hit_rate={sc['hit_rate']}  size={sc['size']}/{sc['maxsize']}")
             else:
                 # Interactive conversational loop
                 print(f"\nReAct Agent ready  |  {session_label}  |  retrieval: {args.retrieval}")
@@ -395,6 +420,11 @@ def main():
                         info = embedding_gen.cache_info()
                         if info:
                             print(f"[Embed cache] hits={info.hits}  misses={info.misses}  cached={info.currsize}/{info.maxsize}")
+                        sc = _sem_cache.info()
+                        print(f"[Semantic cache] checks={sc['total_checks']}  hits={sc['total_hits']}  hit_rate={sc['hit_rate']}  size={sc['size']}/{sc['maxsize']}")
+                        if _sem_cache.top_entries():
+                            for e in _sem_cache.top_entries(3):
+                                print(f"  {e['hits']}x  \"{e['query']}\"")
                         print("Goodbye.")
                         break
                     if user_input.lower() == "new":
