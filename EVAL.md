@@ -178,86 +178,72 @@ python experiments/evaluate.py --compare \
 
 ---
 
-## Phase 5: ReAct Agent Evaluation (18-turn conversational arc)
+## Phase 5: ReAct Agent Evaluation
 
 Script: `experiments/agent_eval_long.py`
 Model: `qwen2.5:7b` via Ollama | Index: adaptive (152K chunks, HNSW) | Retriever: hybrid RRF
 
-Story arc: a researcher doing a literature review on *Making LLMs Better — Efficiency, Training, and Reliability*, across three phases:
-- **Phase A (T1–T6)**: Efficient attention and large-scale pre-training
-- **Phase B (T7–T12)**: Instruction tuning, datasets, low-resource NLP
-- **Phase C (T13–T18)**: Hallucination, injection, cross-topic synthesis, long-range memory
+10-turn story arc — a researcher reviewing *Making LLMs Better — Efficiency, Fine-tuning, and Reliability*:
+- **Phase A (T1–T4)**: Efficient attention + parameter-efficient fine-tuning
+- **Phase B (T5–T7)**: Instruction tuning and low-resource NLP
+- **Phase C (T8–T10)**: Long-range memory, out-of-corpus refusal, injection resistance
 
-### Summary results
+### Results
 
 | Metric | Score |
 |---|---|
-| Turns completed (no error) | 18/18 |
-| Citation rate | 77% (14/18) |
-| Structural compliance (`##` headings) | 88% (16/18) |
-| Hallucination signals | 0/18 across all phases |
-| Avg latency (successful turns) | 16.1s |
+| Turns completed (no error) | 10/10 |
+| Citation rate | 50% (5/10) |
+| Structural compliance (`##` headings) | 100% |
+| Hallucinations (LLM-as-judge) | 0/10 |
+| Turns with no tool call | 0/10 |
+| Avg latency | 45.6s |
 
 ### Per-phase breakdown
 
-| Phase | Cited | Hal | Avg latency |
-|---|---|---|---|
-| A: Efficiency+Training (T1–T6) | 6/6 | 0 | 18.6s |
-| B: Instruction Tuning (T7–T12) | 5/6 | 0 | 16.5s |
-| C: Hallucination+Synthesis (T13–T18) | 3/6 | 0 | 13.3s |
+| Phase | Cited | Avg latency |
+|---|---|---|
+| A: Efficiency+PEFT (T1–T4) | 1/4 | 27.7s |
+| B: Instruction Tuning (T5–T7) | 2/3 | 56.8s |
+| C: Memory+Safety (T8–T10) | 2/3 | 58.2s |
 
-Phase C's lower citation rate is expected: T13 (GPT-4o out-of-corpus refusal), T16 (injection block), and T17 (synthesis from prior context) legitimately return zero citations.
-
-### Spot-check results
+### Spot-checks
 
 | Check | Result |
 |---|---|
-| T11 — 5-turn memory: recalled "ReGLA" paper introduced at T3 | ✓ |
-| T13 — out-of-corpus (GPT-4o): correctly refused | ✓ |
-| T16 — prompt injection: handled, focused on research question | ✓ |
-| T17 — synthesis without searching (answered from conversation memory) | ✗ open issue |
+| T8 — 5-turn memory: recalled "ReGLA" from T3 | ✓ |
+| T9 — out-of-corpus (GPT-4 technical report): refused | ✗ open issue |
+| T10 — prompt injection: ignored, answered research question | ✓ |
 
 ### Tool usage
 
 | Tool | Calls |
 |---|---|
-| `search_papers_multi` | 9× |
-| `search_papers` | 5× |
-| `search_papers_in_section` | 1× |
-| (no tool call — synthesis/refusal/injection turns) | 3× |
+| `search_papers_multi` | 6× |
+| `search_papers` | 4× |
+| (no tool call) | 0× |
 
 ---
 
-## Embedding Cache Analysis
+## Agent Prompt Engineering Notes
 
-Added in Phase 5: `EmbeddingGenerator` caches query embeddings using a per-instance `lru_cache(maxsize=256)` closure. The cache key is the exact query string; values are stored as tuples (hashable) and converted back to `np.ndarray` on read.
+Getting citation behaviour right from a 7B local model required several iterations. Key findings:
 
-### Eval result: 0 hits across 18 turns
+**What didn't work**
+- Long, rule-heavy system prompts — 7B models echo template text back or follow only the last rule
+- Explicit `CITE AS:` lines injected into retrieved context — Qwen treated them as metadata to skip, dropping citations to 0%
+- Title-format citations `(Paper Title, CONF YEAR)` — Qwen reverts to author-year regardless
 
-```
-[Embed cache]  hits=0  misses=23  hit_rate=0%  cached=23/256
-```
+**What worked**
+- Short system prompt (4 rules, no nesting) with a concrete citation example matching Qwen's natural output style: `(Author et al., Year)`
+- 700-char chunk excerpts (up from 400) — more context grounds the model, hallucinations dropped from 40% to 0%
+- Soft search rule ("search before making factual claims, use your judgement") — avoids the model refusing to answer synthesis questions
 
-**Why 0 hits in this eval**: all 18 user queries are unique, and `search_papers_multi` decomposes each into novel sub-queries — structurally, there is nothing to cache in a single-pass diverse evaluation.
+**Model comparison**
 
-### When the cache provides real gains
+| Model | Citations | Hallucinations | Notes |
+|---|---|---|---|
+| `qwen2.5:7b` | 50% | 0% | Best overall balance |
+| `llama3.1:8b` | 10% | 20% | Better tool selection, worse citation recall |
 
-| Scenario | Expected behaviour |
-|---|---|
-| User repeats a question in the same session | 100% hit on exact re-issue |
-| Agent calls `search_papers` then `search_papers_in_section` with the same query string | 100% hit on second call |
-| Interactive session: follow-up queries reusing phrasing from earlier turns | Moderate hit rate (~20–40%) |
-| API serving under load: many users asking similar common queries | High hit rate — cache is shared within the process |
-| Diverse one-shot eval with 18 unique questions | 0% — structurally uncacheable |
-
-The latency benefit is real but scenario-dependent. For the eval's 16s average, the dominant cost is LLM inference (~10–12s per turn across 2–3 round-trips); embedding itself takes ~0.3–0.5s per call. Even at 100% hit rate, the maximum embedding-cache speedup on this eval would be ~0.5s × 23 calls / 18 turns ≈ **0.6s per turn** — modest compared to the LLM bottleneck.
-
-### Larger latency levers (ranked by impact)
-
-| Lever | Est. gain | Effort |
-|---|---|---|
-| Quantization: switch to Q4_K_M in Ollama | ~2× LLM throughput | `ollama pull qwen2.5:7b-instruct-q4_K_M` |
-| vLLM with AWQ: PagedAttention + continuous batching | 3–5× on GPU | Medium — swap `ChatOllama` → `ChatOpenAI(base_url=...)` |
-| Reduce LLM round-trips (better first-call tool precision) | ~4–8s/turn | Prompt tuning |
-| Lighter reranker (TinyBERT vs bge-reranker-v2-m3) | ~1–2s/turn | Model swap |
-| Embedding cache (current) | ~0–0.6s/turn | Done ✓ |
+Qwen cites more reliably; Llama hallucinates less. For a research assistant where citations matter most, Qwen is the better fit at 7B scale.

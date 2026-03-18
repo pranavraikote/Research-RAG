@@ -93,7 +93,7 @@ def format_output(result: dict):
 
 import re as _re
 _CITATION_RE = _re.compile(
-    r"\([^)]{3,80},\s*(?:ACL|EMNLP|NAACL|EACL|COLING|NeurIPS|ICML|ICLR|\d{4})[^)]*\)",
+    r"\((?!e\.g\.|i\.e\.|cf\.|see )[^)]{3,80},\s*(?:ACL|EMNLP|NAACL|EACL|COLING|NeurIPS|ICML|ICLR|\d{4})[^)]*\)",
     _re.IGNORECASE,
 )
 
@@ -115,8 +115,8 @@ def main():
     
     parser.add_argument('-q', '--query', default=None,
                        help='Query to ask (omit with --react to enter interactive conversation mode)')
-    parser.add_argument('-r', '--retrieval', default='semantic', 
-                       choices=['semantic', 'bm25', 'hybrid'], 
+    parser.add_argument('-r', '--retrieval', default='hybrid',
+                       choices=['semantic', 'bm25', 'hybrid'],
                        help='Retrieval strategy')
     parser.add_argument('-k', '--top-k', type=int, default=5, 
                        help='Number of papers to retrieve per iteration')
@@ -132,7 +132,7 @@ def main():
                        help='LLM model name (HuggingFace format)')
     parser.add_argument('--llm-provider', default='auto', choices=['auto', 'ollama', 'huggingface'],
                        help='LLM provider (auto = try Ollama first, fall back to HuggingFace)')
-    parser.add_argument('--ollama-model', default='qwen2:1.5b',
+    parser.add_argument('--ollama-model', default='qwen2.5:7b',
                        help='Ollama model name (used when provider is auto or ollama)')
     parser.add_argument('--no-quantization', action='store_true',
                        help='Disable quantization (use full precision)')

@@ -187,13 +187,11 @@ def _format_chunks(chunks: list, query: str, label: str = "") -> str:
         conf = meta.get("conference", "")
         year = meta.get("year", "")
         section = meta.get("section_type", "")
-        score = chunk.get("score", 0.0)
-        raw_text = chunk.get("text", "")[:400]
+        raw_text = chunk.get("text", "")[:700]
 
         header = f"[{i}] {title} ({conf} {year})"
         if section:
             header += f" — {label or section}"
-        header += f" | score={score:.3f}"
 
         # Wrap content so LLM treats it as data, not instructions
         safe_text = wrap_retrieved_content(raw_text)
