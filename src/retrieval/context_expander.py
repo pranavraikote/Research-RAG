@@ -209,32 +209,3 @@ class ContextExpander:
                 })
 
         return section_chunks
-
-
-# Example usage
-if __name__ == "__main__":
-    """
-    Example: How to use context expansion with retrieval
-    """
-
-    # Mock data for demonstration
-    chunks = ["chunk1", "chunk2", "chunk3"]
-    metadata = [
-        {"chunk_id": "paper1_chunk_0", "section_type": "methods"},
-        {"chunk_id": "paper1_chunk_1", "section_type": "methods"},
-        {"chunk_id": "paper1_chunk_2", "section_type": "results"},
-    ]
-
-    retrieved = [
-        {"text": "chunk2", "metadata": metadata[1]}
-    ]
-
-    expander = ContextExpander(chunks, metadata)
-
-    # Add 1 chunk before/after
-    expanded = expander.expand_with_neighbors(retrieved, window_size=1)
-    print(f"Expanded from {len(retrieved)} to {len(expanded)} chunks")
-
-    # Get full section
-    full_section = expander.get_full_section(retrieved[0])
-    print(f"Full section has {len(full_section)} chunks")

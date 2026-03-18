@@ -120,13 +120,12 @@ This is the key insight: basic chunking is forgiving of single-query retrieval b
 - [x] Both LLM backends support `bind_tools`: `ChatOllama` (langchain-ollama) and `ChatHuggingFace`
 - [x] Query decomposition — LLM (with heuristic fallback) breaks complex queries into focused sub-queries with section hints
 - [x] Multi-query retrieval with RRF merge — `search_papers_multi` tool runs sub-queries sequentially and fuses results via RRF before cross-encoder reranking
-- [x] Structured output — mandatory citation format `(Title, Conference Year)` enforced via system prompt; citation presence validated on every answer
+- [x] Structured output — citation format `(Author et al., Year)` enforced via system prompt; citation presence validated on every answer
 - [x] Prompt injection protection — user input sanitised before reaching LLM
+- [x] Reflection — post-answer critique pass (`reflect_on_answer`); revises if hard failures found; gated behind `--reflect` flag
 
 **Future**:
-- [ ] Parallel sub-query retrieval — currently sequential; parallelise with ThreadPoolExecutor once MPS thread-safety is confirmed
-- [ ] Cross-paper synthesis and contradiction detection — explicitly surface when papers disagree on a claim
-- [ ] Gap detection in literature — identify research questions unanswered by the corpus
+- [ ] PubMed integration — live tool via NCBI E-utilities API (39M abstracts, free, no auth required)
 
 ## Data Sources
 
@@ -135,4 +134,4 @@ This is the key insight: basic chunking is forgiving of single-query retrieval b
 - **Basic chunks**: 54,264 (fixed-size, 1500 chars, 300 overlap)
 - **Adaptive chunks**: 152,021 (HybridStructuredChunker, section-aware)
 
-**Future sources**: NeurIPS, ICML, arXiv (cs.CL, cs.AI, cs.LG)
+**Future sources**: PubMed (39M biomedical abstracts, live via NCBI E-utilities), NeurIPS, ICML, arXiv (cs.CL, cs.AI, cs.LG)

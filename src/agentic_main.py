@@ -1,7 +1,9 @@
 import argparse
+import logging
+import os
+import re as _re
 import signal
 import sys
-import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -32,7 +34,6 @@ def _resolve_bm25_path(index_path: str) -> str:
 
 def format_output(result: dict):
     """Format and display agentic RAG results."""
-    
     if result["type"] == "workflow":
         print(f"\nWorkflow: {result['workflow']} - {result['message']}")
     
@@ -91,7 +92,6 @@ def format_output(result: dict):
         print(f"- **Task Type**: {task_type}")
 
 
-import re as _re
 _CITATION_RE = _re.compile(
     r"\((?!e\.g\.|i\.e\.|cf\.|see )[^)]{3,80},\s*(?:ACL|EMNLP|NAACL|EACL|COLING|NeurIPS|ICML|ICLR|\d{4})[^)]*\)",
     _re.IGNORECASE,
@@ -214,8 +214,7 @@ def main():
     log_level = logging.DEBUG if args.verbose else logging.INFO
     log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     
-    # Store show_prompts flag for agents to use
-    import os
+    # Store show_prompts flag for agents to use.
     if args.show_prompts:
         os.environ['AGENTIC_SHOW_PROMPTS'] = '1'
     
@@ -356,7 +355,7 @@ def main():
                             q_text = args_dict.get("query", "")
                             section = args_dict.get("section_type", "")
                             if q_text:
-                                display = f'  [Searching] "{q_text}"'
+                                display = f"  [Searching] \"{q_text}\""
                                 if section:
                                     display += f"  [section: {section}]"
                             else:
@@ -412,7 +411,7 @@ def main():
                                     args_dict = event["args"]
                                     q_text = args_dict.get("query", "")
                                     section = args_dict.get("section_type", "")
-                                    display = f'  [Re-searching] "{q_text}"' if q_text else f"  [{event['tool']}]"
+                                    display = f"  [Re-searching] \"{q_text}\"" if q_text else f"  [{event['tool']}]"
                                     if section:
                                         display += f"  [section: {section}]"
                                     print(display)

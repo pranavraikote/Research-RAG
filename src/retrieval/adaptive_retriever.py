@@ -10,9 +10,12 @@ Works with both:
 - BM25Retriever (sparse only)
 - HybridRetriever (sparse + dense fusion)
 """
+import logging
 import re
 from typing import ClassVar, List, Dict, Optional, Union, Any
 from pydantic import ConfigDict
+
+logger = logging.getLogger(__name__)
 from .bm25 import BM25Retriever
 from .semantic import SemanticRetriever
 from .context_expander import ContextExpander
@@ -136,8 +139,7 @@ class AdaptiveRetriever(BaseRetriever):
         top_k: int = 5,
         filters: Optional[Dict] = None,
         force_basic: bool = False,
-        verbose: bool = False,
-        query_embedding = None  # For HybridRetriever
+        query_embedding=None,  # For HybridRetriever
     ) -> List[Dict]:
         """
         Adaptive search that automatically chooses strategy.
@@ -154,7 +156,6 @@ class AdaptiveRetriever(BaseRetriever):
             top_k: Number of chunks to retrieve
             filters: Additional filters (year, conference, etc.)
             force_basic: Force basic retrieval (no section filtering)
-            verbose: Print strategy decisions
             query_embedding: Pre-computed query embedding (for HybridRetriever)
 
         Returns:
@@ -171,27 +172,19 @@ class AdaptiveRetriever(BaseRetriever):
             detected_sections = self.detect_section_keywords(query)
 
             if detected_sections:
-                # Add section filter
                 filters["section_type"] = detected_sections
                 strategy_used = f"section_filtered({', '.join(detected_sections)})"
-
-                if verbose:
-                    print(f"🔍 Detected sections: {detected_sections}")
-                    print(f"   Filtering to: {detected_sections}")
+                logger.debug("Detected sections: %s", detected_sections)
 
         # STEP 2: Retrieval (sparse + dense if hybrid)
-        if verbose:
-            retriever_type = "Hybrid (sparse+dense)" if self.is_hybrid else "BM25 (sparse)"
-            print(f"📊 Retriever: {retriever_type}")
-            print(f"   Strategy: {strategy_used}")
-            print(f"   Filters: {filters}")
+        retriever_type = "hybrid (sparse+dense)" if self.is_hybrid else "BM25 (sparse)"
+        logger.debug("Retriever: %s | strategy: %s | filters: %s", retriever_type, strategy_used, filters)
 
         # Retrieve more chunks if we'll be merging
         retrieve_k = top_k * 2 if self.enable_merging else top_k
 
         # Handle different retriever types
         if self.is_hybrid:
-            # HybridRetriever needs both query and query_embedding
             if query_embedding is None and self.embedding_model:
                 query_embedding = self.embedding_model.encode(query)
 
@@ -199,54 +192,47 @@ class AdaptiveRetriever(BaseRetriever):
                 query=query,
                 query_embedding=query_embedding,
                 top_k=retrieve_k,
-                filters=filters
+                filters=filters,
             )
         elif self.is_semantic:
-            # SemanticRetriever only needs query_embedding
             if query_embedding is None and self.embedding_model:
                 query_embedding = self.embedding_model.encode(query)
 
             results = self.retriever.search(
                 query_embedding=query_embedding,
                 top_k=retrieve_k,
-                filters=filters
+                filters=filters,
             )
         else:
             # BM25Retriever only needs query text
             results = self.retriever.search(
                 query=query,
                 top_k=retrieve_k,
-                filters=filters
+                filters=filters,
             )
 
-        if verbose:
-            print(f"   Retrieved: {len(results)} chunks")
+        logger.debug("Retrieved %d chunks", len(results))
 
         # STEP 3: Context expansion
         if self.enable_expansion and self.expander and results:
+            before = len(results)
             results = self.expander.expand_with_neighbors(
                 results,
-                window_size=self.expansion_window
+                window_size=self.expansion_window,
             )
-
-            if verbose:
-                print(f"   After expansion: {len(results)} chunks (+{len(results) - retrieve_k})")
+            logger.debug("After expansion: %d chunks (+%d)", len(results), len(results) - before)
 
         # STEP 4: Merging (optional)
         if self.enable_merging and self.expander and results:
             results = self.expander.merge_section_chunks(
                 results,
-                merge_threshold=self.merge_threshold
+                merge_threshold=self.merge_threshold,
             )
-
-            if verbose:
-                print(f"   After merging: {len(results)} chunks")
+            logger.debug("After merging: %d chunks", len(results))
 
         # Trim to top_k if needed
         results = results[:top_k]
-
-        if verbose:
-            print(f"   Final: {len(results)} chunks")
+        logger.debug("Final: %d chunks", len(results))
 
         return results
 
@@ -280,7 +266,6 @@ class AdaptiveRetriever(BaseRetriever):
             top_k=top_k,
             filters=filters,
             query_embedding=query_embedding,
-            verbose=False
         )
 
         explanation["retrieved_count"] = len(results)
@@ -324,7 +309,6 @@ class AdaptiveRetriever(BaseRetriever):
             top_k=k,
             filters=filters,
             query_embedding=query_embedding,
-            verbose=False
         )
 
         return [
@@ -334,44 +318,3 @@ class AdaptiveRetriever(BaseRetriever):
             )
             for result in results
         ]
-
-
-# Example usage
-if __name__ == "__main__":
-    """
-    Example: Using adaptive retriever
-    """
-
-    # Mock setup
-    from .bm25 import BM25Retriever
-
-    retriever = BM25Retriever()
-    # ... add chunks ...
-
-    adaptive = AdaptiveRetriever(
-        retriever,
-        enable_expansion=True,
-        enable_merging=False,
-        expansion_window=1
-    )
-
-    # Example 1: General query → basic retrieval
-    results = adaptive.search(
-        "What is this paper about?",
-        top_k=5,
-        verbose=True
-    )
-
-    # Example 2: Method query → section filtering
-    results = adaptive.search(
-        "How does the model architecture work?",
-        top_k=5,
-        verbose=True
-    )
-
-    # Example 3: Results query → section filtering
-    results = adaptive.search(
-        "What are the experimental results on accuracy?",
-        top_k=5,
-        verbose=True
-    )

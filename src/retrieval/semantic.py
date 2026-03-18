@@ -1,9 +1,13 @@
+import logging
+
 import faiss
 import numpy as np
 from pathlib import Path
 from typing import ClassVar, List, Dict, Optional, Any
 from pydantic import ConfigDict
 from .bm25 import BM25Retriever
+
+logger = logging.getLogger(__name__)
 
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
@@ -96,7 +100,7 @@ class SemanticRetriever(BaseRetriever):
             self.index.hnsw.efSearch = self.hnsw_ef_search
             self._active_index_type = "hnsw"
 
-            print(f"Using HNSW index (M={self.hnsw_m}, efConstruction={self.hnsw_ef_construction}, efSearch={self.hnsw_ef_search})")
+            logger.info("Using HNSW index (M=%d, efConstruction=%d, efSearch=%d)", self.hnsw_m, self.hnsw_ef_construction, self.hnsw_ef_search)
 
         else:
             # Flat index for small collections or explicit flat request
@@ -108,9 +112,9 @@ class SemanticRetriever(BaseRetriever):
             self._active_index_type = "flat"
 
             if self.index_type == "hnsw" and n_chunks < self.HNSW_MIN_CHUNKS:
-                print(f"Using Flat index (collection size {n_chunks} below HNSW threshold {self.HNSW_MIN_CHUNKS})")
+                logger.info("Using Flat index (collection size %d below HNSW threshold %d)", n_chunks, self.HNSW_MIN_CHUNKS)
             else:
-                print(f"Using Flat index")
+                logger.info("Using Flat index")
 
     def add_chunks(self, embeddings, chunks, metadata):
         """

@@ -1,4 +1,6 @@
+import logging
 import time
+
 import torch
 
 from langchain_huggingface import HuggingFacePipeline, ChatHuggingFace
@@ -12,20 +14,22 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline, BitsAndB
 from .retrieval.reranker import CrossEncoderReranker
 from .retrieval.query_parser import QueryParser
 
+logger = logging.getLogger(__name__)
+
+
 class RAGChain:
 
     @staticmethod
     def _check_ollama_available(model_name):
         """
-        Checking if Ollama is running and the model is available function.
+        Check if Ollama is running and the given model is available.
 
         Args:
-            model_name: Ollama model name to check for
+            model_name: Ollama model name to check for.
 
         Returns:
-            result: True if Ollama is running and model is available
+            True if Ollama is running and the model is available.
         """
-
         try:
             import urllib.request
             import json
@@ -33,14 +37,14 @@ class RAGChain:
             with urllib.request.urlopen(req, timeout=2) as response:
                 data = json.loads(response.read())
                 models = [m["name"] for m in data.get("models", [])]
-                # Checking for exact match or prefix match (e.g., "qwen2:1.5b" matches "qwen2:1.5b-instruct")
+                # Exact match or prefix match (e.g. "qwen2:1.5b" matches "qwen2:1.5b-instruct").
                 return any(model_name in m or m.startswith(model_name.split(":")[0]) for m in models)
         except Exception:
             return False
 
     def __init__(self, embedding_generator, retriever, llm_model, llm_provider,
-        ollama_model = "qwen2:1.5b", use_quantization = True, quantization_bits = 4,
-        enable_prompt_cache = True):
+                 ollama_model="qwen2:1.5b", use_quantization=True, quantization_bits=4,
+                 enable_prompt_cache=True):
         """
         Initialize RAG chain.
 
@@ -55,15 +59,15 @@ class RAGChain:
             enable_prompt_cache: Enable prompt caching for faster generation (HuggingFace only)
         """
 
-        # Auto-detecting provider: try Ollama first, fall back to HuggingFace
+        # Auto-detecting provider: try Ollama first, fall back to HuggingFace.
         if llm_provider == "auto":
             if self._check_ollama_available(ollama_model):
                 llm_provider = "ollama"
                 llm_model = ollama_model
-                print(f"Auto-detected Ollama with model '{ollama_model}'")
+                logger.info("Auto-detected Ollama with model '%s'", ollama_model)
             else:
                 llm_provider = "huggingface"
-                print(f"Ollama not available, falling back to HuggingFace with '{llm_model}'")
+                logger.info("Ollama not available, falling back to HuggingFace with '%s'", llm_model)
 
         self.retriever = retriever
         self.llm_provider = llm_provider
@@ -84,7 +88,7 @@ class RAGChain:
         self.reranker = CrossEncoderReranker()
 
         if llm_provider == "ollama":
-            self.llm = ChatOllama(model = llm_model, temperature = 0)
+            self.llm = ChatOllama(model=llm_model, temperature=0)
 
         elif llm_provider == "huggingface":
             if torch.backends.mps.is_available():
@@ -107,23 +111,23 @@ class RAGChain:
                     "dtype": torch.float16,
                 }
 
-                print(f"Using MPS (Metal) acceleration on Mac")
+                logger.info("Using MPS (Metal) acceleration on Mac")
                 pipeline_device = None
 
             elif device == "cuda":
                 if use_quantization and quantization_bits in [4, 8]:
                     try:
                         quantization_config = BitsAndBytesConfig(
-                            load_in_4bit = (quantization_bits == 4),
-                            load_in_8bit = (quantization_bits == 8),
-                            bnb_4bit_compute_dtype=torch.float16
+                            load_in_4bit=(quantization_bits == 4),
+                            load_in_8bit=(quantization_bits == 8),
+                            bnb_4bit_compute_dtype=torch.float16,
                         )
 
                         model_kwargs = {
                             "device_map": "auto",
                             "quantization_config": quantization_config,
                         }
-                        print(f"Using {quantization_bits}-bit quantization on CUDA")
+                        logger.info("Using %d-bit quantization on CUDA", quantization_bits)
                         pipeline_device = None
 
                     except ImportError:
@@ -146,7 +150,7 @@ class RAGChain:
                 }
                 pipeline_device = -1
 
-                print("Using CPU (consider using a smaller model or quantization)")
+                logger.info("Using CPU (consider using a smaller model or quantization)")
             
             model = AutoModelForCausalLM.from_pretrained(llm_model, **model_kwargs)
             tokenizer = AutoTokenizer.from_pretrained(llm_model)
@@ -195,7 +199,7 @@ class RAGChain:
             ("human", "{user_message}")
         ])
         
-        # Trying Prompt Caching :P
+        # Prompt caching (HuggingFace only): pre-compute KV cache for the static system prompt.
         if self.llm_provider == "huggingface" and enable_prompt_cache:
             self.prompt_cache_enabled = True
             self.cached_prompt_kv_cache = None
@@ -211,14 +215,14 @@ class RAGChain:
     
     def _format_user_message(self, context, question):
         """
-        Formatting user message function.
-        
+        Format the user message combining retrieved context and the question.
+
         Args:
-            context: Retrieved context from papers
-            question: User question
-            
+            context: Retrieved context from papers.
+            question: User question.
+
         Returns:
-            Formatted user message string
+            Formatted user message string.
         """
         
         return f"""Context from research papers:
@@ -230,13 +234,11 @@ class RAGChain:
     
     def _get_model_device(self):
         """
-        Getting model device function.
-        
+        Return the device the model is currently loaded on.
+
         Returns:
-            Device where the model is located
+            torch.device for the model.
         """
-        
-        # Fetching the "device", very important for production-grade systems :)
         if hasattr(self.model, 'device'):
             return self.model.device
         elif hasattr(self.model, 'hf_device_map'):
@@ -245,9 +247,7 @@ class RAGChain:
             return torch.device("cpu")
     
     def _build_rag_chain(self):
-        """
-        Building RAG chain using LangChain chains function.
-        """
+        """Build the RAG chain using LangChain runnables."""
         
         # Block 1: Parse filters and prepare inputs
         def prepare_inputs(inputs: dict) -> dict:
@@ -386,19 +386,17 @@ class RAGChain:
             | RunnableLambda(format_context)
         )
     
-    def _apply_chat_template(self, messages, add_generation_prompt = True):
+    def _apply_chat_template(self, messages, add_generation_prompt=True):
         """
-        Applying chat template function.
-        
+        Apply the tokenizer chat template to a list of messages.
+
         Args:
-            messages: List of message dictionaries with role and content
-            add_generation_prompt: Whether to add generation prompt
-            
+            messages: List of message dicts with role and content.
+            add_generation_prompt: Whether to append the generation prompt token.
+
         Returns:
-            Formatted prompt string
+            Formatted prompt string.
         """
-        
-        # Applying the Chat template
         if hasattr(self.tokenizer, 'apply_chat_template'):
             try:
                 return self.tokenizer.apply_chat_template(
@@ -412,19 +410,15 @@ class RAGChain:
             return "\n\n".join([msg.get("content", "") for msg in messages])
     
     def _initialize_prompt_cache(self):
-        """
-        Initializing prompt cache function.
-        
-        """
+        """Pre-compute and cache the KV cache for the static system prompt."""
         
         if not self.prompt_cache_enabled or self.llm_provider != "huggingface":
             return
         
         try:
-            # Formatting the system prompt using chat template if available
             cached_prompt = self._apply_chat_template(
                 [{"role": "system", "content": self.system_prompt}],
-                add_generation_prompt = False
+                add_generation_prompt=False,
             )
             
             # Tokenizing the prompt
@@ -440,10 +434,10 @@ class RAGChain:
                 self.cached_prompt_kv_cache = outputs.past_key_values
                 self.cached_prompt_length = inputs['input_ids'].shape[1]
             
-            print(f"Prompt cache initialized ({self.cached_prompt_length} tokens cached)")
-        
-        except Exception as e:
+            logger.info("Prompt cache initialised (%d tokens cached)", self.cached_prompt_length)
 
+        except Exception as exc:
+            logger.warning("Prompt cache init failed, disabling: %s", exc)
             self.prompt_cache_enabled = False
             self.cached_prompt_kv_cache = None
     
