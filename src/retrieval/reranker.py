@@ -1,29 +1,42 @@
+import logging
+
 import numpy as np
+import torch
 from sentence_transformers import CrossEncoder
+
+logger = logging.getLogger(__name__)
+
 
 class CrossEncoderReranker:
 
-    def __init__(self, model_name = "BAAI/bge-reranker-v2-m3"):
+    def __init__(self, model_name="BAAI/bge-reranker-v2-m3"):
         """
-        Initialize cross-encoder re-ranker.
+        Initialize cross-encoder reranker.
 
-        Default model: BAAI/bge-reranker-v2-m3 (2024, SOTA)
-        - 568M parameters
-        - Multilingual support
-        - Significantly better than older MS-MARCO models
-        - Fast inference (10-20ms for 20 chunks)
+        Default model: BAAI/bge-reranker-v2-m3 (568M params, SOTA).
+        Uses MPS on Apple Silicon with float16 for ~2x faster inference.
 
         Alternative models:
-        - "jina-ai/jina-reranker-v2-base-multilingual" (278M, faster)
         - "BAAI/bge-reranker-v2-gemma" (2B, best quality)
-        - "cross-encoder/ms-marco-MiniLM-L-6-v2" (legacy, not recommended)
+        - "jina-ai/jina-reranker-v2-base-multilingual" (278M, faster)
 
         Args:
             model_name: HuggingFace model name for cross-encoder
         """
+        if torch.backends.mps.is_available():
+            device = "mps"
+        elif torch.cuda.is_available():
+            device = "cuda"
+        else:
+            device = "cpu"
 
-        # Loading the cross-encoder model: [CLS] query [SEP] chunk [SEP]
-        self.model = CrossEncoder(model_name)
+        self.model = CrossEncoder(model_name, device=device)
+
+        # float16 on MPS/CUDA for faster inference
+        if device in ("mps", "cuda"):
+            self.model.model.half()
+
+        logger.info("Reranker loaded on %s (dtype=%s)", device, next(self.model.model.parameters()).dtype)
     
     def rerank(self, query, chunks, top_k = 3):
         """

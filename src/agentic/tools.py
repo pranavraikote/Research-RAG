@@ -329,13 +329,12 @@ def search_papers_multi(query: str, top_k: int = 5) -> str:
     # --- Rerank merged set ---
     reranked = _rag_chain.reranker.rerank(query, merged, top_k=top_k)
 
-    # Prepend decomposition info so the agent knows what was searched
-    sub_query_summary = "\n".join(
-        f"  • {sq.query}" + (f" [section:{sq.section_hint}]" if sq.section_hint else "")
-        for sq in sub_queries
+    logger.info(
+        "search_papers_multi: returning %d chunks from %d sub-queries",
+        len(reranked),
+        len(sub_queries),
     )
-    header = f"[Decomposed into {len(sub_queries)} sub-queries]\n{sub_query_summary}\n\n"
-    return header + _format_chunks(reranked, query)
+    return _format_chunks(reranked, query)
 
 
 @tool

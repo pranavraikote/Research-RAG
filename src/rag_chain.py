@@ -88,7 +88,12 @@ class RAGChain:
         self.reranker = CrossEncoderReranker()
 
         if llm_provider == "ollama":
-            self.llm = ChatOllama(model=llm_model, temperature=0)
+            ollama_kwargs = {"model": llm_model, "temperature": 0}
+            # There is scope to control this
+            if llm_model.startswith("qwen3"):
+                ollama_kwargs["think"] = False
+                # ollama_kwargs["think"] = True
+            self.llm = ChatOllama(**ollama_kwargs)
 
         elif llm_provider == "huggingface":
             if torch.backends.mps.is_available():
