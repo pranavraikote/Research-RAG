@@ -13,11 +13,11 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 - **BM25**: bm25s (sparse matrices, mmap persistence)
 - **Reranker**: BAAI/bge-reranker-v2-m3 (568M params, multilingual SOTA)
 - **Chunking**: HybridStructuredChunker (section-aware, citation-aware, paragraph-based)
-- **LLM (local)**: ChatOllama (langchain-ollama) or ChatHuggingFace — both support bind_tools
+- **LLM (local)**: ChatOllama (langchain-ollama) — default `qwen3:8b`; or ChatHuggingFace — both support bind_tools
 - **Agentic**: LangGraph create_react_agent + MemorySaver (conversational memory)
 - **Observability**: LangSmith (automatic tracing of all LangChain/LangGraph calls)
 - **Primary Data Source**: ACL Anthology
-- **Deployment**: Local CLI-based interface
+- **Deployment**: Streamlit chat UI (`app.py`) + legacy CLI (`src/agentic_main.py`)
 
 ## Development Phases
 
@@ -87,7 +87,7 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 
 ### Phase 5: Agentic RAG
 
-**Status**: In Progress
+**Status**: Completed
 
 **Goal**: Build an agentic system that can reason across papers, compare findings, and identify gaps.
 
@@ -120,12 +120,26 @@ This is the key insight: basic chunking is forgiving of single-query retrieval b
 - [x] Both LLM backends support `bind_tools`: `ChatOllama` (langchain-ollama) and `ChatHuggingFace`
 - [x] Query decomposition — LLM (with heuristic fallback) breaks complex queries into focused sub-queries with section hints
 - [x] Multi-query retrieval with RRF merge — `search_papers_multi` tool runs sub-queries sequentially and fuses results via RRF before cross-encoder reranking
-- [x] Structured output — citation format `(Author et al., Year)` enforced via system prompt; citation presence validated on every answer
+- [x] Structured output — numbered citation format `[1]`, `[2]` with references list at end; enforced via system prompt
 - [x] Prompt injection protection — user input sanitised before reaching LLM
 - [x] Reflection — post-answer critique pass (`reflect_on_answer`); revises if hard failures found; gated behind `--reflect` flag
+- [x] PubMed integration — live tool via NCBI E-utilities API (39M abstracts, free, no auth required)
+
+---
+
+### Phase 6: UI and Performance
+
+**Status**: In Progress
+
+**Goal**: Streamlit chat interface and performance optimisations without changing retrieval architecture.
+
+**Completed**:
+- [x] Streamlit chat UI (`app.py`) — streaming responses, live agent status via `st.status`, session management, model selector
+- [x] Reranker on MPS with float16 — ~2x faster inference on Apple Silicon; `CrossEncoderReranker` auto-detects MPS/CUDA/CPU
+- [x] Default LLM upgraded to `qwen3:8b` — better instruction-following and citation adherence than `qwen2.5:7b`
 
 **Future**:
-- [ ] PubMed integration — live tool via NCBI E-utilities API (39M abstracts, free, no auth required)
+- [ ] PDF upload in UI — let users add papers to the index live
 
 ## Data Sources
 

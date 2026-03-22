@@ -15,8 +15,13 @@ the LangGraph state, keeping state serialisable.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 from typing import List, Optional
 
 from langchain_core.tools import tool
@@ -358,4 +363,157 @@ def detect_relevant_sections(query: str) -> str:
     return f"Relevant sections: {', '.join(sections)}"
 
 
-TOOLS = [search_papers_multi, search_papers, search_papers_in_section, detect_relevant_sections]
+# ---------------------------------------------------------------------------
+# PubMed helpers
+# ---------------------------------------------------------------------------
+
+_NCBI_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+
+
+def _pubmed_fetch(query: str, max_results: int) -> list[dict]:
+    """
+    Query NCBI E-utilities (esearch + efetch) and return article dicts.
+
+    Each dict has: pmid, title, authors, journal, year, abstract.
+    Respects NCBI_API_KEY env var for higher rate limits (10 req/s vs 3 req/s).
+    """
+    api_key = os.environ.get("NCBI_API_KEY", "")
+
+    # Step 1: esearch — retrieve PMIDs
+    esearch_params: dict = {
+        "db": "pubmed",
+        "term": query,
+        "retmax": str(max_results),
+        "retmode": "json",
+    }
+    if api_key:
+        esearch_params["api_key"] = api_key
+
+    url = _NCBI_BASE + "esearch.fcgi?" + urllib.parse.urlencode(esearch_params)
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        data = json.loads(resp.read())
+    pmids = data.get("esearchresult", {}).get("idlist", [])
+    if not pmids:
+        return []
+
+    # Step 2: efetch — retrieve full records as XML
+    efetch_params: dict = {
+        "db": "pubmed",
+        "id": ",".join(pmids),
+        "rettype": "abstract",
+        "retmode": "xml",
+    }
+    if api_key:
+        efetch_params["api_key"] = api_key
+
+    url = _NCBI_BASE + "efetch.fcgi?" + urllib.parse.urlencode(efetch_params)
+    with urllib.request.urlopen(url, timeout=15) as resp:
+        root = ET.fromstring(resp.read())
+
+    articles = []
+    for article_el in root.findall(".//PubmedArticle"):
+        citation = article_el.find("MedlineCitation")
+        if citation is None:
+            continue
+        article = citation.find("Article")
+        if article is None:
+            continue
+
+        pmid = citation.findtext("PMID", "")
+
+        title_el = article.find("ArticleTitle")
+        title = "".join(title_el.itertext()).strip() if title_el is not None else "Unknown"
+
+        # Abstract — plain or structured (multiple AbstractText with Label attrs)
+        abstract_els = article.findall(".//AbstractText")
+        if abstract_els:
+            parts = []
+            for at in abstract_els:
+                label = at.get("Label", "")
+                text = "".join(at.itertext()).strip()
+                parts.append(f"{label}: {text}" if label else text)
+            abstract = " ".join(parts)
+        else:
+            abstract = ""
+
+        # First author + "et al." shorthand
+        last_names = [
+            a.findtext("LastName", "") for a in article.findall(".//Author")
+            if a.findtext("LastName")
+        ]
+        if len(last_names) > 1:
+            author_str = f"{last_names[0]} et al."
+        elif last_names:
+            author_str = last_names[0]
+        else:
+            author_str = "Unknown"
+
+        journal = article.findtext(".//Journal/Title", "")
+
+        pub_date = article.find(".//PubDate")
+        year = ""
+        if pub_date is not None:
+            year = pub_date.findtext("Year", "")
+            if not year:
+                medline = pub_date.findtext("MedlineDate", "")
+                year = medline[:4] if medline else ""
+
+        articles.append({
+            "pmid": pmid,
+            "title": title,
+            "authors": author_str,
+            "journal": journal,
+            "year": year,
+            "abstract": abstract[:700],
+        })
+
+    return articles
+
+
+@tool
+def search_pubmed(query: str, max_results: int = 5) -> str:
+    """Search PubMed for biomedical and clinical NLP literature via NCBI E-utilities.
+
+    Use this for queries about biomedical, clinical, or health-related NLP topics
+    not well-covered by the ACL corpus — e.g. clinical NLP, BioNLP, medical text
+    mining, electronic health records, biomedical relation extraction.
+    For core NLP/ML/AI research, prefer search_papers or search_papers_multi.
+
+    Results are fetched live from PubMed (not pre-indexed). Only abstracts are
+    returned — full text is not available via this tool.
+
+    Supports MeSH terms and Boolean operators, e.g.:
+      "clinical NLP AND electronic health records"
+      "biomedical named entity recognition[MeSH]"
+
+    Args:
+        query: PubMed search query string.
+        max_results: Number of results to return (default 5, max 10).
+
+    Returns:
+        Formatted list of PubMed articles with title, authors, journal, year,
+        PMID, and abstract excerpt.
+    """
+    max_results = min(max_results, 10)
+    try:
+        articles = _pubmed_fetch(query, max_results)
+    except Exception as exc:
+        logger.warning("PubMed fetch failed for query %r: %s", query[:60], exc)
+        return f"PubMed search failed: {exc}"
+
+    if not articles:
+        return "No PubMed results found."
+
+    parts = []
+    for i, art in enumerate(articles, 1):
+        header = (
+            f"[{i}] {art['title']} — {art['authors']}"
+            f" ({art['journal']}, {art['year']}) PMID:{art['pmid']}"
+        )
+        body = wrap_retrieved_content(art["abstract"]) if art["abstract"] else "[No abstract available]"
+        parts.append(f"{header}\n{body}\n")
+
+    return "\n".join(parts)
+
+
+TOOLS = [search_papers_multi, search_papers, search_papers_in_section, detect_relevant_sections, search_pubmed]
