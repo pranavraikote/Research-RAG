@@ -46,24 +46,36 @@ class QueryParser:
         """
         
         filters = {}
-        original_query = query
-        
+        cleaned = query
+
         # Extracting conferences
         conferences = self._extract_conferences(query)
         if conferences:
             filters['conference'] = conferences[0] if len(conferences) == 1 else conferences
-        
+            # Strip matched conference tokens so they don't pollute BM25.
+            cleaned = self.conf_regex.sub("", cleaned)
+
         # Extracting years
         year_filter = self._extract_years(query)
         if year_filter:
             filters['year'] = year_filter
-        
+            # Strip matched year tokens.
+            cleaned = self.year_range_regex.sub("", cleaned)
+            cleaned = self.year_to_regex.sub("", cleaned)
+            cleaned = self.year_regex.sub("", cleaned)
+
         # Extracting title mentions (look for quoted text or "paper titled X" patterns)
         title_filter = self._extract_title(query)
         if title_filter:
             filters['title'] = title_filter
-        
-        return original_query, filters if filters else None
+
+        # Collapse whitespace left behind by stripping.
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        # If cleaning removed all meaningful content, fall back to original.
+        if not cleaned:
+            cleaned = query
+
+        return cleaned, filters if filters else None
     
     def _extract_conferences(self, query):
         """

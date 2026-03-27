@@ -20,7 +20,7 @@ class SemanticRetriever(BaseRetriever):
     # HNSW parameters
     HNSW_M: ClassVar[int] = 32                  # Number of connections per layer
     HNSW_EF_CONSTRUCTION: ClassVar[int] = 64    # Construction-time search depth
-    HNSW_EF_SEARCH: ClassVar[int] = 32          # Query-time search depth
+    HNSW_EF_SEARCH: ClassVar[int] = 64          # Query-time search depth (>= 2 * typical top_k)
     HNSW_MIN_CHUNKS: ClassVar[int] = 1000       # Minimum chunks to use HNSW (Flat fallback below this)
 
     def __init__(self, index_path = None, chunks_path = None, dimension = None, metric = "IP",
@@ -191,11 +191,9 @@ class SemanticRetriever(BaseRetriever):
             valid_ids: Numpy array of valid chunk indices
         """
 
-        filter_helper = BM25Retriever()
-
         valid_ids = []
         for idx, meta in enumerate(self.chunk_metadata):
-            if filter_helper.matches_filter(meta, filters):
+            if BM25Retriever.matches_filter(meta, filters):
                 valid_ids.append(idx)
 
         return np.array(valid_ids, dtype=np.int64)
@@ -223,6 +221,11 @@ class SemanticRetriever(BaseRetriever):
             return []
 
         query_embedding = query_embedding.reshape(1, -1).astype('float32')
+
+        # Dynamically adjust efSearch for HNSW to ensure recall at higher top_k.
+        if self._active_index_type == "hnsw":
+            desired_ef = max(self.HNSW_EF_SEARCH, top_k * 2)
+            self.index.hnsw.efSearch = desired_ef
 
         # Normalizing query if IP metric
         if self.metric == "IP":

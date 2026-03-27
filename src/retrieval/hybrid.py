@@ -85,15 +85,17 @@ class HybridRetriever(BaseRetriever):
         rrf_scores = {}
         all_chunks = {}
 
-        # Accumulating RRF scores from semantic results
+        # Accumulating RRF scores from semantic results.
+        # Fallback IDs use a shared prefix so the same chunk at rank N in both
+        # lists still fuses correctly when chunk_id metadata is missing.
         for rank, result in enumerate(semantic_results, 1):
-            chunk_id = result["metadata"].get("chunk_id", f"sem_{rank}")
+            chunk_id = result["metadata"].get("chunk_id") or f"_noid_sem_{rank}"
             rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0) + 1.0 / (self.rrf_k + rank)
             all_chunks[chunk_id] = result
 
         # Accumulating RRF scores from BM25 results
         for rank, result in enumerate(bm25_results, 1):
-            chunk_id = result["metadata"].get("chunk_id", f"bm25_{rank}")
+            chunk_id = result["metadata"].get("chunk_id") or f"_noid_bm25_{rank}"
             rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0) + 1.0 / (self.rrf_k + rank)
             if chunk_id not in all_chunks:
                 all_chunks[chunk_id] = result

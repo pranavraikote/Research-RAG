@@ -143,7 +143,8 @@ class BM25Retriever(BaseRetriever):
 
         self.bm25 = bm25s.BM25.load(path, mmap = True)
 
-    def matches_filter(self, metadata, filters):
+    @staticmethod
+    def matches_filter(metadata, filters):
         """
         Metadata matching the filter function.
 
@@ -210,30 +211,24 @@ class BM25Retriever(BaseRetriever):
                 if not any(ft.lower() in chunk_title for ft in filter_title):
                     return False
 
-        # Section type filter (for structured chunking)
+        # Section type filter (for structured chunking).
         if "section_type" in filters:
             filter_section = filters["section_type"]
             chunk_section = metadata.get("section_type", "").lower()
 
-            # Skip chunks without section metadata (e.g., basic chunking)
-            if not chunk_section or chunk_section == "unknown":
-                # Allow filtering out chunks without section info
-                # If filter is strict (not "unknown"), exclude these chunks
-                if isinstance(filter_section, str):
-                    if filter_section.lower() != "unknown":
-                        return False
-                elif isinstance(filter_section, list):
-                    if "unknown" not in [s.lower() for s in filter_section]:
-                        return False
+            # Normalise empty/missing section to "unknown" so filter logic is
+            # consistent — empty string and "unknown" are treated identically.
+            if not chunk_section:
+                chunk_section = "unknown"
 
-            # Match section type
+            # Build the allowed set for a single comparison path.
             if isinstance(filter_section, str):
-                if chunk_section != filter_section.lower():
-                    return False
+                allowed = {filter_section.lower()}
             else:
-                # List of allowed sections
-                if chunk_section not in [s.lower() for s in filter_section]:
-                    return False
+                allowed = {s.lower() for s in filter_section}
+
+            if chunk_section not in allowed:
+                return False
 
         return True
 

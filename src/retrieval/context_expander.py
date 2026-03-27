@@ -103,12 +103,13 @@ class ContextExpander:
         # Build expanded chunks in DOCUMENT ORDER (reading order)
         # Original chunks keep scores, neighbors get 0.0
         expanded_chunks = []
-        for idx in sorted(expanded_indices):  # Sort by document position
+        for rank, idx in enumerate(sorted(expanded_indices), 1):
             expanded_chunks.append({
                 "text": self.all_chunks[idx],
                 "metadata": self.all_metadata[idx],
-                "score": original_scores.get(idx, 0.0),  # Original score or 0.0 for neighbors
-                "is_expanded": idx not in original_indices  # Mark context vs retrieved
+                "score": original_scores.get(idx, 0.0),
+                "rank": rank,
+                "is_expanded": idx not in original_indices,
             })
 
         # Return in document order for natural reading flow

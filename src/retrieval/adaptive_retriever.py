@@ -45,15 +45,19 @@ class AdaptiveRetriever(BaseRetriever):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
     # Section keywords mapping (includes both singular and plural forms)
+    # Section keywords — only include terms that unambiguously indicate the user
+    # wants a specific paper section.  Removed overly broad words like "model",
+    # "architecture", "score", "performance", "analysis", "future", "summary"
+    # that appear in normal research queries and cause unwanted filtering.
     SECTION_KEYWORDS: ClassVar[Dict[str, List[str]]] = {
-        "abstract": ["abstract", "summary", "overview"],
+        "abstract": ["abstract", "overview"],
         "introduction": ["introduction", "intro", "background", "motivation"],
-        "related_work": ["related work", "prior work", "previous work", "literature"],
-        "methods": ["method", "methods", "methodology", "approach", "technique", "algorithm", "model", "architecture"],
-        "experiments": ["experiment", "experiments", "experimental", "evaluation", "setup", "implementation"],
-        "results": ["result", "results", "finding", "findings", "performance", "accuracy", "metric", "metrics", "score"],
-        "discussion": ["discussion", "analysis", "interpretation"],
-        "conclusion": ["conclusion", "conclusions", "summary", "future work", "future"],
+        "related_work": ["related work", "prior work", "previous work", "literature review"],
+        "methods": ["method", "methods", "methodology", "approach", "technique", "algorithm"],
+        "experiments": ["experiment", "experiments", "experimental", "evaluation setup", "implementation details"],
+        "results": ["result", "results", "finding", "findings", "accuracy", "metric", "metrics"],
+        "discussion": ["discussion", "interpretation"],
+        "conclusion": ["conclusion", "conclusions", "future work"],
         "limitations": ["limitation", "limitations", "weakness", "weaknesses"],
     }
 
