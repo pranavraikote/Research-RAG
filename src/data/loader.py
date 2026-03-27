@@ -37,36 +37,33 @@ class PDFLoader:
         """
         
         doc = fitz.open(pdf_path)
-        
-        text_pages = []
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            # Extracting text with better formatting
-            text = page.get_text("text")
-            
-            if text:
-                # Cleaning up the extracted text
-                text = self._clean_pdf_text(text)
-                text_pages.append(text)
-            else:
-                text_pages.append("")
-        
-        # Getting metadata
-        metadata_dict = doc.metadata
-        
-        metadata = {
-            "title": metadata_dict.get("title", ""),
-            "author": metadata_dict.get("author", ""),
-            "subject": metadata_dict.get("subject", ""),
-            "creator": metadata_dict.get("creator", ""),
-            "producer": metadata_dict.get("producer", ""),
-            "creation_date": metadata_dict.get("creationDate", ""),
-            "modification_date": metadata_dict.get("modDate", ""),
-            "num_pages": len(doc)
-        }
-        
-        doc.close()
-        
+        try:
+            text_pages = []
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                text = page.get_text("text")
+
+                if text:
+                    text = self._clean_pdf_text(text)
+                    text_pages.append(text)
+                else:
+                    text_pages.append("")
+
+            metadata_dict = doc.metadata
+
+            metadata = {
+                "title": metadata_dict.get("title", ""),
+                "author": metadata_dict.get("author", ""),
+                "subject": metadata_dict.get("subject", ""),
+                "creator": metadata_dict.get("creator", ""),
+                "producer": metadata_dict.get("producer", ""),
+                "creation_date": metadata_dict.get("creationDate", ""),
+                "modification_date": metadata_dict.get("modDate", ""),
+                "num_pages": len(doc)
+            }
+        finally:
+            doc.close()
+
         return {
             "text": "\n\n".join(text_pages),
             "metadata": metadata,
@@ -89,56 +86,56 @@ class PDFLoader:
         """
         pdf_path = Path(pdf_path)
         doc = fitz.open(pdf_path)
+        try:
+            # Extract text blocks with layout information
+            blocks = []
+            text_pages = []
 
-        # Extract text blocks with layout information
-        blocks = []
-        text_pages = []
+            for page_num in range(len(doc)):
+                page = doc[page_num]
 
-        for page_num in range(len(doc)):
-            page = doc[page_num]
+                # Get structured text (dict mode includes font info, bboxes)
+                page_dict = page.get_text("dict")
 
-            # Get structured text (dict mode includes font info, bboxes)
-            page_dict = page.get_text("dict")
+                page_text_blocks = []
 
-            page_text_blocks = []
+                # Process each block in the page
+                for block in page_dict.get("blocks", []):
+                    if block.get("type") == 0:  # Text block
+                        for line in block.get("lines", []):
+                            for span in line.get("spans", []):
+                                text = span.get("text", "").strip()
+                                if text:
+                                    block_info = {
+                                        "text": text,
+                                        "font_size": span.get("size", 10.0),
+                                        "font": span.get("font", ""),
+                                        "bbox": span.get("bbox", (0, 0, 0, 0)),
+                                        "page_num": page_num
+                                    }
+                                    blocks.append(block_info)
+                                    page_text_blocks.append(text)
 
-            # Process each block in the page
-            for block in page_dict.get("blocks", []):
-                if block.get("type") == 0:  # Text block
-                    for line in block.get("lines", []):
-                        for span in line.get("spans", []):
-                            text = span.get("text", "").strip()
-                            if text:
-                                block_info = {
-                                    "text": text,
-                                    "font_size": span.get("size", 10.0),
-                                    "font": span.get("font", ""),
-                                    "bbox": span.get("bbox", (0, 0, 0, 0)),
-                                    "page_num": page_num
-                                }
-                                blocks.append(block_info)
-                                page_text_blocks.append(text)
+                # Store page text
+                page_text = " ".join(page_text_blocks)
+                if page_text:
+                    page_text = self._clean_pdf_text(page_text)
+                text_pages.append(page_text)
 
-            # Store page text
-            page_text = " ".join(page_text_blocks)
-            if page_text:
-                page_text = self._clean_pdf_text(page_text)
-            text_pages.append(page_text)
-
-        # Extract PDF metadata
-        metadata_dict = doc.metadata
-        metadata = {
-            "title": metadata_dict.get("title", ""),
-            "author": metadata_dict.get("author", ""),
-            "subject": metadata_dict.get("subject", ""),
-            "creator": metadata_dict.get("creator", ""),
-            "producer": metadata_dict.get("producer", ""),
-            "creation_date": metadata_dict.get("creationDate", ""),
-            "modification_date": metadata_dict.get("modDate", ""),
-            "num_pages": len(doc)
-        }
-
-        doc.close()
+            # Extract PDF metadata
+            metadata_dict = doc.metadata
+            metadata = {
+                "title": metadata_dict.get("title", ""),
+                "author": metadata_dict.get("author", ""),
+                "subject": metadata_dict.get("subject", ""),
+                "creator": metadata_dict.get("creator", ""),
+                "producer": metadata_dict.get("producer", ""),
+                "creation_date": metadata_dict.get("creationDate", ""),
+                "modification_date": metadata_dict.get("modDate", ""),
+                "num_pages": len(doc)
+            }
+        finally:
+            doc.close()
 
         # Build full text
         full_text = "\n\n".join(text_pages)

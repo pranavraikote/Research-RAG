@@ -8,7 +8,10 @@ The agent and retriever are loaded once at startup via @st.cache_resource.
 Changing the model or retrieval method in the sidebar triggers a reload.
 """
 
+import json
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -32,6 +35,37 @@ _ROOT = Path(__file__).parent
 _INDEX = str(_ROOT / "artifacts/adaptive_faiss_index")
 _CHUNKS = str(_ROOT / "artifacts/adaptive_chunks.json")
 _BM25 = str(_ROOT / "artifacts/adaptive_bm25")
+_LOG_DIR = _ROOT / "logs"
+_LOG_DIR.mkdir(exist_ok=True)
+
+
+def _log_turn(
+    thread_id: str,
+    query: str,
+    answer: str,
+    model: str,
+    retrieval: str,
+    tool_calls: list,
+    latency_s: float,
+    reflected: bool = False,
+    flagged: bool = False,
+) -> None:
+    """Append one conversation turn to a JSONL log file (one file per day)."""
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "thread_id": thread_id,
+        "model": model,
+        "retrieval": retrieval,
+        "query": query,
+        "answer": answer,
+        "tool_calls": tool_calls,
+        "latency_s": round(latency_s, 2),
+        "reflected": reflected,
+        "flagged": flagged,
+    }
+    log_file = _LOG_DIR / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
+    with open(log_file, "a") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +145,15 @@ for msg in st.session_state.messages:
 # Load agent at startup (cached — runs once per unique model+retrieval combo)
 # ---------------------------------------------------------------------------
 
-agent, rag_chain = load_agent(ollama_model, retrieval)
+try:
+    agent, rag_chain = load_agent(ollama_model, retrieval)
+except Exception as exc:
+    st.error(
+        f"Failed to load agent. Check that Ollama is running and "
+        f"the model **{ollama_model}** is pulled.\n\n"
+        f"```\n{exc}\n```"
+    )
+    st.stop()
 
 # ---------------------------------------------------------------------------
 # Chat input + streaming response
@@ -135,6 +177,8 @@ if prompt := st.chat_input("Ask about ACL Anthology research papers…"):
         accumulated = ""
         generating = False
         n_searches = 0
+        tool_calls_log = []
+        t_start = time.perf_counter()
 
         for event in run_react_agent(agent, clean_prompt, thread_id=st.session_state.thread_id):
             etype = event["type"]
@@ -143,6 +187,7 @@ if prompt := st.chat_input("Ask about ACL Anthology research papers…"):
                 n_searches += 1
                 tool = event["tool"]
                 q = event["args"].get("query", "")[:70]
+                tool_calls_log.append({"tool": tool, "query": q})
                 with agent_status:
                     st.markdown(f"**{tool}** — {q}")
 
@@ -200,5 +245,18 @@ if prompt := st.chat_input("Ask about ACL Anthology research papers…"):
                     accumulated = revised
 
         answer_area.markdown(accumulated)
+
+        # Log the turn to JSONL.
+        _log_turn(
+            thread_id=st.session_state.thread_id,
+            query=clean_prompt,
+            answer=accumulated,
+            model=ollama_model,
+            retrieval=retrieval,
+            tool_calls=tool_calls_log,
+            latency_s=time.perf_counter() - t_start,
+            reflected=reflect and accumulated != "",
+            flagged=flagged,
+        )
 
     st.session_state.messages.append({"role": "assistant", "content": accumulated})

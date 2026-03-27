@@ -60,46 +60,27 @@ class CrossEncoderReranker:
         # Creating query-chunk pairs for cross-encoder
         pairs = [[query, chunk_text] for chunk_text in chunk_texts]
         
-        # Computing relevance score using cross-encoder
+        # Computing relevance scores using cross-encoder.
+        # bge-reranker-v2-m3 outputs sigmoid scores in [0, 1] — these are
+        # absolute relevance scores, not relative.  Do NOT min-max normalise;
+        # downstream threshold checks (e.g. _RELEVANCE_THRESHOLD = 0.5)
+        # depend on the raw sigmoid values.
         scores = self.model.predict(pairs)
-        
-        # Converting to numpy array for normalization
-        scores = np.array(scores)
-        
-        # Normalizing scores to 0-1 range using min-max scaling
-        if len(scores) > 1:
-            min_score = scores.min()
-            max_score = scores.max()
-            if max_score != min_score:
-                normalized_scores = (scores - min_score) / (max_score - min_score)
-            else:
-                # All scores are the same, set to 1.0
-                normalized_scores = np.ones_like(scores)
-        else:
-            # Single score, set to 1.0
-            normalized_scores = np.array([1.0])
-        
-        # Creating list of (chunk, score) tuples
-        chunk_scores = list(zip(chunks, normalized_scores))
-        
-        # Sorting by score (descending)
-        chunk_scores.sort(key=lambda x: x[1], reverse = True)
-        
-        # Returning top_k chunks with updated scores
+        scores = np.array(scores, dtype=float)
+
+        # Sort by raw sigmoid score (descending).
+        chunk_scores = sorted(
+            zip(chunks, scores), key=lambda x: x[1], reverse=True
+        )
+
         reranked_chunks = []
-        for rank, (chunk, normalized_score) in enumerate(chunk_scores[:top_k], 1):
+        for rank, (chunk, raw_score) in enumerate(chunk_scores[:top_k], 1):
             reranked_chunk = chunk.copy()
-            
-            # Preserving original retrieval score
-            original_score = chunk.get('score', 0.0)
-            reranked_chunk['original_score'] = float(original_score)
-            
-            # Adding normalized reranked score
-            reranked_chunk['score'] = float(normalized_score)
-            reranked_chunk['reranked_score'] = float(normalized_score)
-            
-            reranked_chunk['rank'] = rank
-            reranked_chunk['reranked'] = True
+            reranked_chunk["original_score"] = float(chunk.get("score", 0.0))
+            reranked_chunk["score"] = float(raw_score)
+            reranked_chunk["raw_score"] = float(raw_score)
+            reranked_chunk["rank"] = rank
+            reranked_chunk["reranked"] = True
             reranked_chunks.append(reranked_chunk)
-        
+
         return reranked_chunks

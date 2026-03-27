@@ -83,9 +83,6 @@ class HybridStructuredChunker:
         paragraphs = structure["paragraphs"]
         citations = structure.get("citations", [])
 
-        # Build citation map for fast lookup
-        citation_map = self._build_citation_map(citations)
-
         # Process each section
         chunk_idx = 0
         for section in sections:
@@ -106,7 +103,6 @@ class HybridStructuredChunker:
             # Chunk this section's paragraphs
             section_chunks = self._chunk_section_paragraphs(
                 section_paragraphs,
-                citation_map,
                 section_type,
                 section_title,
                 section_page_start,
@@ -143,18 +139,16 @@ class HybridStructuredChunker:
     def _chunk_section_paragraphs(
         self,
         paragraphs: List[Dict],
-        citation_map: Dict,
         section_type: str,
         section_title: str,
         section_page_start: int,
         section_page_end: int
     ) -> List[tuple]:
         """
-        Chunk paragraphs within a section while preserving citations.
+        Chunk paragraphs within a section, splitting on paragraph boundaries.
 
         Args:
             paragraphs: List of paragraph dicts for this section
-            citation_map: Map of char positions to citations
             section_type: Type of section (abstract, intro, etc.)
             section_title: Title of the section
             section_page_start: Starting page of section
@@ -244,67 +238,6 @@ class HybridStructuredChunker:
             chunks.append((chunk_text, chunk_metadata))
 
         return chunks
-
-    def _build_citation_map(self, citations: List[Dict]) -> Dict[int, Dict]:
-        """Build map from character positions to citations."""
-        citation_map = {}
-        for citation in citations:
-            start = citation.get("char_start", 0)
-            end = citation.get("char_end", 0)
-            for pos in range(start, end):
-                citation_map[pos] = citation
-        return citation_map
-
-    def _ensure_no_citation_splits(self, text: str, citation_map: Dict) -> str:
-        """
-        Ensure no citations are split. If a citation is at the boundary,
-        extend text to include full citation.
-
-        Args:
-            text: Chunk text
-            citation_map: Map of positions to citations
-
-        Returns:
-            Adjusted text with complete citations
-        """
-        # For simplicity, we rely on paragraph boundaries naturally
-        # avoiding citation splits. This is a placeholder for more
-        # sophisticated boundary adjustment if needed.
-        return text
-
-    def _extract_citations_in_chunk(self, chunk_text: str) -> List[Dict]:
-        """Extract citations from chunk text."""
-        try:
-            from ..data import structure_utils
-            return structure_utils.extract_citations(chunk_text)
-        except ImportError:
-            # Fallback pattern matching
-            citations = []
-            patterns = [
-                (r'\[(\d+(?:\s*,\s*\d+)*(?:\s*[-–]\s*\d+)?)\]', 'numeric'),
-                (r'\(([A-Z][a-z]+(?:\s+et\s+al\.?)?,?\s+\d{4}[a-z]?)\)', 'author_year'),
-            ]
-
-            for pattern, citation_type in patterns:
-                for match in re.finditer(pattern, chunk_text):
-                    citations.append({
-                        "text": match.group(0),
-                        "type": citation_type
-                    })
-
-            return citations
-
-    def _has_incomplete_citation(self, text: str) -> bool:
-        """Check if text has incomplete citations."""
-        # Check for incomplete numeric citations
-        if re.search(r'\[\d+(?:,\s*\d+)*(?![\d,\s\]]*\])', text):
-            return True
-
-        # Check for orphaned brackets
-        if text.strip().startswith(']') or text.strip().endswith('['):
-            return True
-
-        return False
 
     def _fallback_chunk(
         self,

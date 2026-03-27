@@ -263,11 +263,19 @@ def build_char_offset_map(text: str, blocks: List[Dict]) -> Dict[int, int]:
     """
     offset_map = {}
     current_offset = 0
+    prev_page = None
 
     for i, block in enumerate(blocks):
+        page_num = block.get("page_num", 0)
+        # The full text is built with "\n\n".join(text_pages), so each page
+        # boundary adds a 2-char separator that raw block lengths don't include.
+        if prev_page is not None and page_num != prev_page:
+            current_offset += 2  # account for "\n\n" between pages
+
         block_text = block.get("text", "")
         offset_map[i] = current_offset
         current_offset += len(block_text)
+        prev_page = page_num
 
     return offset_map
 
@@ -361,11 +369,13 @@ def validate_structure(structure: Dict) -> Tuple[bool, List[str]]:
     # Check for common issues
     if not sections:
         warnings.append("No sections detected - structure extraction may have failed")
+        is_valid = False
 
     if not paragraphs:
         warnings.append("No paragraphs detected - text may be poorly formatted")
+        is_valid = False
 
-    # Check for expected sections
+    # Check for expected sections.
     section_types = {s["type"] for s in sections}
     expected_sections = {"abstract", "introduction", "conclusion", "references"}
     missing_sections = expected_sections - section_types
@@ -373,7 +383,7 @@ def validate_structure(structure: Dict) -> Tuple[bool, List[str]]:
     if missing_sections:
         warnings.append(f"Missing common sections: {', '.join(missing_sections)}")
 
-    # Check citation count
+    # Check citation count.
     if len(citations) == 0:
         warnings.append("No citations detected - paper may not have standard citation format")
 
