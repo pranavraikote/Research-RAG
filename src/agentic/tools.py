@@ -39,17 +39,17 @@ _query_parser = QueryParser()        # Extracts conference/year filters from nat
 # Section keyword map — mirrors AdaptiveRetriever.SECTION_KEYWORDS so the tool
 # works regardless of which retriever backend is in use (Hybrid, BM25, Adaptive).
 _SECTION_KEYWORDS: dict[str, list[str]] = {
-    "abstract":     ["abstract", "summary", "overview"],
+    "abstract":     ["abstract", "overview"],
     "introduction": ["introduction", "intro", "background", "motivation"],
-    "related_work": ["related work", "prior work", "previous work", "literature"],
+    "related_work": ["related work", "prior work", "previous work", "literature review"],
     "methods":      ["method", "methods", "methodology", "approach", "technique",
-                     "algorithm", "model", "architecture"],
-    "experiments":  ["experiment", "experiments", "experimental", "evaluation",
-                     "setup", "implementation"],
-    "results":      ["result", "results", "finding", "findings", "performance",
-                     "accuracy", "metric", "metrics", "score"],
-    "discussion":   ["discussion", "analysis", "interpretation"],
-    "conclusion":   ["conclusion", "conclusions", "future work", "future"],
+                     "algorithm"],
+    "experiments":  ["experiment", "experiments", "experimental",
+                     "evaluation setup", "implementation details"],
+    "results":      ["result", "results", "finding", "findings",
+                     "accuracy", "metric", "metrics"],
+    "discussion":   ["discussion", "interpretation"],
+    "conclusion":   ["conclusion", "conclusions", "future work"],
     "limitations":  ["limitation", "limitations", "weakness", "weaknesses"],
 }
 
@@ -151,9 +151,10 @@ def _rrf_merge(result_lists: List[List[dict]], top_k: int, k: int = 60) -> List[
     scores: dict[str, float] = {}
     all_chunks: dict[str, dict] = {}
 
-    for results in result_lists:
+    for list_idx, results in enumerate(result_lists):
         for rank, result in enumerate(results, 1):
-            chunk_id = result.get("metadata", {}).get("chunk_id", f"_r{rank}")
+            chunk_id = result.get("metadata", {}).get("chunk_id") \
+                or f"_noid_L{list_idx}_R{rank}"
             scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank)
             if chunk_id not in all_chunks:
                 all_chunks[chunk_id] = result
@@ -192,7 +193,7 @@ def _format_chunks(chunks: list, query: str, label: str = "") -> str:
         conf = meta.get("conference", "")
         year = meta.get("year", "")
         section = meta.get("section_type", "")
-        raw_text = chunk.get("text", "")[:700]
+        raw_text = chunk.get("text", "")
 
         header = f"[{i}] {title} ({conf} {year})"
         if section:
@@ -200,7 +201,9 @@ def _format_chunks(chunks: list, query: str, label: str = "") -> str:
 
         # Wrap content so LLM treats it as data, not instructions
         safe_text = wrap_retrieved_content(raw_text)
-        parts.append(f"{header}\n{safe_text}\n")
+        # Repeat citation anchor after the content so the model sees it
+        # immediately before writing the next chunk — prevents [N] decay in 7B models.
+        parts.append(f"{header}\n{safe_text}\n→ Use [{i}] when citing any fact from the above.\n")
 
     return "\n".join(parts)
 
@@ -231,7 +234,8 @@ def search_papers(query: str, top_k: int = 5) -> str:
     if not chunks:
         return "No results found."
     reranked = _rag_chain.reranker.rerank(query, chunks, top_k=top_k)
-    return _format_chunks(reranked, query)
+    result = _format_chunks(reranked, query)
+    return result + "\nRemember: cite each fact with its [N] number in your answer."
 
 
 @tool
@@ -275,7 +279,8 @@ def search_papers_in_section(query: str, section_type: str, top_k: int = 5) -> s
         return f"No results found for '{query}'."
     reranked = _rag_chain.reranker.rerank(query, chunks, top_k=top_k)
     label = f"[{section_type}]" if _corpus_has_sections else f"[unfiltered — no section metadata]"
-    return _format_chunks(reranked, query, label=label)
+    result = _format_chunks(reranked, query, label=label)
+    return result + "\nRemember: cite each fact with its [N] number in your answer."
 
 
 @tool
@@ -339,7 +344,8 @@ def search_papers_multi(query: str, top_k: int = 5) -> str:
         len(reranked),
         len(sub_queries),
     )
-    return _format_chunks(reranked, query)
+    result = _format_chunks(reranked, query)
+    return result + "\nRemember: cite each fact with its [N] number in your answer."
 
 
 @tool
@@ -495,11 +501,12 @@ def search_pubmed(query: str, max_results: int = 5) -> str:
         PMID, and abstract excerpt.
     """
     max_results = min(max_results, 10)
+    clean_query, _ = sanitize_query(query)
     try:
-        articles = _pubmed_fetch(query, max_results)
+        articles = _pubmed_fetch(clean_query, max_results)
     except Exception as exc:
-        logger.warning("PubMed fetch failed for query %r: %s", query[:60], exc)
-        return f"PubMed search failed: {exc}"
+        logger.warning("PubMed fetch failed for query %r: %s", clean_query[:60], exc)
+        return "PubMed search failed. Try rephrasing your query."
 
     if not articles:
         return "No PubMed results found."

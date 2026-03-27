@@ -24,7 +24,8 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 _VALID_SECTIONS = {
-    "methods", "results", "limitations", "conclusion", "general",
+    "abstract", "introduction", "related_work", "methods", "experiments",
+    "results", "discussion", "conclusion", "limitations", "general",
 }
 
 # ---------------------------------------------------------------------------

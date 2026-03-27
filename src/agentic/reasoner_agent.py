@@ -58,11 +58,14 @@ class ReasonerAgent(BaseAgent):
         Returns:
             Formatted string of chunks.
         """
+        from .safety import wrap_retrieved_content
+
         formatted = []
         for i, chunk in enumerate(chunks[:max_chunks], 1):
             text = chunk.get("chunk", chunk.get("text", ""))
             title = chunk.get("metadata", {}).get("title", "Unknown")
-            formatted.append(f"[Paper: {title}]\n{text[:500]}...\n")
+            safe_text = wrap_retrieved_content(text[:500])
+            formatted.append(f"[Paper: {title}]\n{safe_text}\n")
         return "\n".join(formatted)
 
     def _group_chunks_by_paper(self, chunks: List) -> Dict:

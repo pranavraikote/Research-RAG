@@ -54,17 +54,22 @@ class SemanticCache:
         """Return False for context-dependent queries (pronoun references to prior turns)."""
         return not bool(_CONTEXT_PRONOUNS.search(query))
 
-    def get(self, query_embedding: np.ndarray) -> Optional[str]:
+    def get(self, query: str, query_embedding: np.ndarray) -> Optional[str]:
         """
         Return a cached answer if any stored entry meets the similarity threshold.
 
+        Skips the cache for context-dependent queries (pronoun references).
+
         Args:
+            query: Raw query text (used for cacheability check).
             query_embedding: Raw (un-normalised) embedding of the incoming query.
 
         Returns:
             Cached answer string, or None on a miss.
         """
         self._total_checks += 1
+        if not self.is_cacheable(query):
+            return None
         if not self._entries:
             return None
 
@@ -85,8 +90,10 @@ class SemanticCache:
         """
         Store a (query_embedding, answer) pair.
 
-        Returns True if stored, False if skipped (answer too short).
+        Returns True if stored, False if skipped (context-dependent or answer too short).
         """
+        if not self.is_cacheable(query):
+            return False
         if len(answer) < _MIN_ANSWER_LEN:
             return False
         if len(self._entries) >= self.maxsize:

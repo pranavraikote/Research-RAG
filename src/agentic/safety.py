@@ -80,6 +80,12 @@ def sanitize_query(query: str) -> tuple[str, bool]:
             safe_sentences = [s for s in sentences if not pattern.search(s)]
             cleaned = " ".join(safe_sentences).strip()
 
+    # If stripping removed everything, fall back to a safe message rather
+    # than sending an empty string to the retriever.
+    if not cleaned:
+        cleaned = "[query removed — please try a different question]"
+        flagged = True
+
     return cleaned, flagged
 
 
