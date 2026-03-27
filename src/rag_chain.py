@@ -37,13 +37,15 @@ class RAGChain:
             with urllib.request.urlopen(req, timeout=2) as response:
                 data = json.loads(response.read())
                 models = [m["name"] for m in data.get("models", [])]
-                # Exact match or prefix match (e.g. "qwen2:1.5b" matches "qwen2:1.5b-instruct").
-                return any(model_name in m or m.startswith(model_name.split(":")[0]) for m in models)
+                # Exact match or prefix match (e.g. "qwen2.5:7b" matches "qwen2.5:7b-instruct").
+                # Use full model_name as prefix to avoid false positives like
+                # "qwen2" matching "qwen2.5:7b".
+                return any(m == model_name or m.startswith(model_name + "-") for m in models)
         except Exception:
             return False
 
     def __init__(self, embedding_generator, retriever, llm_model, llm_provider,
-                 ollama_model="qwen2:1.5b", use_quantization=True, quantization_bits=4,
+                 ollama_model="qwen2.5:7b", use_quantization=True, quantization_bits=4,
                  enable_prompt_cache=True):
         """
         Initialize RAG chain.
@@ -113,7 +115,7 @@ class RAGChain:
             if device == "mps":
                 model_kwargs = {
                     "device_map": "mps",
-                    "dtype": torch.float16,
+                    "torch_dtype": torch.float16,
                 }
 
                 logger.info("Using MPS (Metal) acceleration on Mac")
@@ -138,20 +140,20 @@ class RAGChain:
                     except ImportError:
                         model_kwargs = {
                             "device_map": "auto",
-                            "dtype": torch.float16,
+                            "torch_dtype": torch.float16,
                         }
                         pipeline_device = None
 
                 else:
                     model_kwargs = {
                         "device_map": "auto",
-                        "dtype": torch.float16,
+                        "torch_dtype": torch.float16,
                     }
                     pipeline_device = None
 
             else:
                 model_kwargs = {
-                    "dtype": torch.float16,
+                    "torch_dtype": torch.float16,
                 }
                 pipeline_device = -1
 

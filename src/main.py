@@ -38,12 +38,12 @@ def main():
     parser.add_argument("--llm-provider", default="auto",
                         choices=["auto", "ollama", "huggingface"],
                         help="LLM provider (auto = try Ollama first, fall back to HuggingFace)")
-    parser.add_argument("--ollama-model", default="qwen2:1.5b",
+    parser.add_argument("--ollama-model", default="qwen2.5:7b",
                         help="Ollama model name (used when provider is auto or ollama)")
 
     project_root = Path(__file__).parent.parent
-    default_index = str(project_root / "artifacts/faiss_index")
-    default_chunks = str(project_root / "artifacts/chunks.json")
+    default_index = str(project_root / "artifacts/adaptive_faiss_index")
+    default_chunks = str(project_root / "artifacts/adaptive_chunks.json")
 
     parser.add_argument("--index-path", default=default_index, help="Path to FAISS index")
     parser.add_argument("--chunks-path", default=default_chunks, help="Path to chunks JSON file")

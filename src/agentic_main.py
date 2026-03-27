@@ -92,10 +92,7 @@ def format_output(result: dict):
         print(f"- **Task Type**: {task_type}")
 
 
-_CITATION_RE = _re.compile(
-    r"\((?!e\.g\.|i\.e\.|cf\.|see )[^)]{3,80},\s*(?:ACL|EMNLP|NAACL|EACL|COLING|NeurIPS|ICML|ICLR|\d{4})[^)]*\)",
-    _re.IGNORECASE,
-)
+_CITATION_RE = _re.compile(r"\[\d+\]")
 
 def _warn_if_no_citations(answer: str) -> None:
     """Print a warning if the answer contains no detectable citations."""
@@ -330,7 +327,7 @@ def main():
                 _query_emb = None
                 if _sem_cache.is_cacheable(question):
                     _query_emb = embedding_gen.embed_query(question)
-                    cached = _sem_cache.get(_query_emb)
+                    cached = _sem_cache.get(question, _query_emb)
                     if cached is not None:
                         print(f"\nAssistant: {cached}")
                         print("  [Semantic cache hit]")
