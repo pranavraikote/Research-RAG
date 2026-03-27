@@ -14,12 +14,12 @@ python experiments/benchmark.py --output experiments/benchmark_results.json
 
 | Config | Avg ms | P50 ms | P90 ms |
 |---|---:|---:|---:|
-| semantic-basic | 26.6 | 25.4 | 47.0 |
-| semantic-adaptive | **15.8** | 13.0 | 30.1 |
-| bm25-basic | 4.5 | 4.4 | 9.4 |
-| bm25-adaptive | 4.5 | 4.6 | 6.8 |
-| hybrid-basic | 14.3 | 14.0 | 19.7 |
-| hybrid-adaptive | **11.1** | 9.0 | 17.3 |
+| semantic-basic | 18.5 | 20.0 | 27.8 |
+| semantic-adaptive | **2.4** | 2.6 | 4.1 |
+| bm25-basic | 3.3 | 0.6 | 0.7 |
+| bm25-adaptive | 1.2 | 1.2 | 1.6 |
+| hybrid-basic | 3.2 | 3.0 | 3.1 |
+| hybrid-adaptive | **2.6** | 2.7 | 4.0 |
 
 Adaptive is paradoxically faster for semantic/hybrid despite having 3× more vectors. The reason is index type: basic uses FlatIP (exhaustive, O(N)), while adaptive uses FAISS HNSW (approximate nearest neighbor, O(log N)). HNSW trades a small amount of recall for a large speedup. BM25 is index-size-invariant at this scale because it operates over sparse inverted lists.
 
@@ -27,22 +27,22 @@ Adaptive is paradoxically faster for semantic/hybrid despite having 3× more vec
 
 | Config | Avg ms | P50 ms | P90 ms |
 |---|---:|---:|---:|
-| bm25 | **4.5** | 4.6 | 6.8 |
-| hybrid-weighted | 10.8 | 9.6 | 14.6 |
-| hybrid-rrf | 11.1 | 9.0 | 17.3 |
-| semantic | 15.8 | 13.0 | 30.1 |
-| semantic+filter | 38.0 | 36.6 | 41.3 |
+| bm25 | **1.2** | 1.2 | 1.6 |
+| semantic | 2.4 | 2.6 | 4.1 |
+| hybrid-rrf | 2.6 | 2.7 | 4.0 |
+| hybrid-weighted | 3.4 | 2.7 | 7.8 |
+| semantic+filter | 28.4 | 28.9 | 29.3 |
 
-The metadata filter (IDSelector) adds ~22ms because it must scan all 152K metadata records upfront to build the allowed-ID set before HNSW search. This is a one-time cost per query but unavoidable with the current FAISS pre-filtering architecture.
+The metadata filter (IDSelector) adds ~26ms because it must scan all 152K metadata records upfront to build the allowed-ID set before HNSW search. This is a one-time cost per query but unavoidable with the current FAISS pre-filtering architecture.
 
 ### Reranker overhead
 
 | Config | Avg ms | P50 ms | P90 ms |
 |---|---:|---:|---:|
-| hybrid-rrf | 11.1 | 9.0 | 17.3 |
-| hybrid+rerank | 3,527 | 3,469 | 3,908 |
+| hybrid-rrf | 2.6 | 2.7 | 4.0 |
+| hybrid+rerank | 3,188 | 2,937 | 4,508 |
 
-The cross-encoder (bge-reranker-v2-m3, 568M params) adds ~3.5s per query — 318× overhead — because it runs a full transformer forward pass over every (query, chunk) pair individually. It cannot batch across queries and does not share computation with the retrieval step. This is only viable for offline/batch use, or when applied to a very small top-k (e.g., reranking top-5 instead of top-20 would be ~4× faster).
+The cross-encoder (bge-reranker-v2-m3, 568M params) adds ~3.2s per query — 1,226× overhead — because it runs a full transformer forward pass over every (query, chunk) pair individually. It cannot batch across queries and does not share computation with the retrieval step. This is the quality-latency trade-off: reranking is essential for adaptive chunks (KBQA MRR jumps from 0.25 to 1.0), so the 3s cost is justified by the precision gain.
 
 ---
 

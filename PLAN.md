@@ -51,9 +51,6 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 - [x] BAAI/bge-base-en-v1.5 embeddings (768d) with HNSW index and FlatIP fallback
 - [x] Retrieval latency benchmark tooling (Semantic, BM25, Hybrid, Filtered)
 
-**Future**:
-- [ ] Query expansion and reformulation (see Phase 5 for evaluation-backed motivation)
-
 ### Phase 3: Advanced Chunking Strategies
 
 **Status**: Completed
