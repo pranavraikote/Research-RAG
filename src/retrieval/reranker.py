@@ -37,8 +37,30 @@ class CrossEncoderReranker:
             self.model.model.half()
 
         logger.info("Reranker loaded on %s (dtype=%s)", device, next(self.model.model.parameters()).dtype)
-    
-    def rerank(self, query, chunks, top_k = 3):
+
+        # Score cache keyed by (query, chunk_id).  Avoids re-scoring identical
+        # pairs across consecutive turns in the same session.
+        self._score_cache: dict = {}
+
+    def _get_scores(self, query: str, chunks: list) -> list[float]:
+        """Return scores for all chunks, using the instance cache for hits."""
+        misses = [(i, c) for i, c in enumerate(chunks) if (query, c.get("chunk_id", "")) not in self._score_cache]
+
+        if misses:
+            pairs = [[query, chunks[i]["text"]] for i, _ in misses]
+            new_scores = self.model.predict(pairs)
+            for (i, c), score in zip(misses, new_scores):
+                key = (query, c.get("chunk_id", ""))
+                self._score_cache[key] = float(score)
+            if len(self._score_cache) > 2048:
+                # Evict oldest quarter when cache exceeds limit.
+                evict = list(self._score_cache.keys())[:512]
+                for k in evict:
+                    del self._score_cache[k]
+
+        return [self._score_cache[(query, c.get("chunk_id", ""))] for c in chunks]
+
+    def rerank(self, query, chunks, top_k=3):
         """
         Re-ranking function.
         
@@ -54,19 +76,11 @@ class CrossEncoderReranker:
         if not chunks:
             return []
         
-        # Extracting chunk texts
-        chunk_texts = [chunk['text'] for chunk in chunks]
-        
-        # Creating query-chunk pairs for cross-encoder
-        pairs = [[query, chunk_text] for chunk_text in chunk_texts]
-        
-        # Computing relevance scores using cross-encoder.
-        # bge-reranker-v2-m3 outputs sigmoid scores in [0, 1] — these are
-        # absolute relevance scores, not relative.  Do NOT min-max normalise;
-        # downstream threshold checks (e.g. _RELEVANCE_THRESHOLD = 0.5)
-        # depend on the raw sigmoid values.
-        scores = self.model.predict(pairs)
-        scores = np.array(scores, dtype=float)
+        # Score each (query, chunk) pair, using the instance cache for hits.
+        # bge-reranker-v2-m3 outputs sigmoid scores in [0, 1] — absolute
+        # relevance, not relative.  Do NOT min-max normalise; downstream
+        # threshold checks (_RELEVANCE_THRESHOLD = 0.5) rely on raw values.
+        scores = np.array(self._get_scores(query, chunks), dtype=float)
 
         # Sort by raw sigmoid score (descending).
         chunk_scores = sorted(

@@ -39,7 +39,16 @@ python src/data/process_papers.py
 # Pre-built: artifacts/adaptive_chunks.json, adaptive_faiss_index, adaptive_bm25
 ```
 
-### 3. Query
+### 3. Run the app
+
+```bash
+# Streamlit chat interface (recommended)
+streamlit run app.py
+# Opens at http://localhost:8501
+# Select model and retrieval method in the sidebar; agent and index load once at startup.
+```
+
+Or use the CLI directly:
 
 ```bash
 # Standalone query (auto-detects Ollama, falls back to HuggingFace)
@@ -62,10 +71,10 @@ python src/main.py -q "Find ACL 2025 papers about transformers"
 python src/conversation_main.py --retrieval hybrid
 
 # Agentic mode — interactive conversational ReAct agent (recommended)
-python src/agentic_main.py --react --retrieval hybrid --ollama-model qwen2.5:7b
+python src/agentic_main.py --react --retrieval hybrid --ollama-model qwen3:14b
 
 # Agentic mode — single-shot query
-python src/agentic_main.py --react --retrieval hybrid --ollama-model qwen2.5:7b \
+python src/agentic_main.py --react --retrieval hybrid --ollama-model qwen3:14b \
   -q "Compare linear attention and standard attention methods and results"
 ```
 
@@ -141,6 +150,7 @@ ResearchRAG/
 │       ├── decomposer.py          # LLM query decomposition with heuristic fallback
 │       ├── safety.py              # Input sanitization + injection-resistant content wrapping
 │       └── orchestrator.py        # Legacy v1 two-agent orchestrator
+├── app.py                         # Streamlit chat interface
 ├── experiments/
 │   ├── benchmark.py               # Latency ablation
 │   └── evaluate.py                # Precision eval (label + eval + compare)
