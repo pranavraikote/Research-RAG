@@ -10,6 +10,7 @@ Changing the model or retrieval method in the sidebar triggers a reload.
 
 import json
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,63 @@ _BM25 = str(_ROOT / "artifacts/adaptive_bm25")
 _LOG_DIR = _ROOT / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
 
+# ---------------------------------------------------------------------------
+# Background model loading
+# ---------------------------------------------------------------------------
+
+@st.cache_resource
+def _bg_state() -> dict:
+    """Single dict shared across all reruns: {threads: {}, results: {}}."""
+    return {"threads": {}, "results": {}}
+
+
+def _load_agent_bg(key: tuple, ollama_model: str, retrieval: str) -> None:
+    """Load agent in a background thread, storing result in _bg_state()."""
+    state = _bg_state()
+    try:
+        result = load_agent(ollama_model, retrieval)
+        state["results"][key] = {"ok": True, "result": result}
+    except Exception as exc:
+        state["results"][key] = {"ok": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# UI helpers
+# ---------------------------------------------------------------------------
+
+# Human-readable labels for agent tool calls.
+_TOOL_LABELS = {
+    "search_papers_multi": "Searching across multiple queries",
+    "search_papers": "Searching papers",
+    "search_papers_in_section": "Searching section",
+    "detect_relevant_sections": "Detecting relevant sections",
+    "search_pubmed": "Searching PubMed",
+}
+
+_EXAMPLE_QUERIES = [
+    "What are the main approaches to efficient attention in transformers?",
+    "Compare linear attention and standard attention — methods and results",
+    "What limitations do ACL 2025 papers identify in retrieval-augmented generation?",
+    "How do recent papers address hallucination in LLMs?",
+]
+
+
+def _tool_label(tool: str, args: dict) -> str:
+    """Return a clean, human-readable description of a tool call."""
+    label = _TOOL_LABELS.get(tool, tool)
+    section = args.get("section", "")
+    query = args.get("query", args.get("queries", ""))
+    if isinstance(query, list):
+        query = " · ".join(query)
+    query = str(query)[:80]
+    if section:
+        return f"{label} ({section}) — {query}"
+    return f"{label} — {query}" if query else label
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 
 def _log_turn(
     thread_id: str,
@@ -72,7 +130,7 @@ def _log_turn(
 # Cached resource — models load once, keyed by (model, retrieval)
 # ---------------------------------------------------------------------------
 
-@st.cache_resource(show_spinner="Loading models and index…")
+@st.cache_resource
 def load_agent(ollama_model: str, retrieval: str):
     """Build and cache the RAGChain + ReAct agent."""
     embedding_gen = EmbeddingGenerator()
@@ -102,22 +160,42 @@ def load_agent(ollama_model: str, retrieval: str):
 # ---------------------------------------------------------------------------
 
 st.set_page_config(page_title="ResearchRAG", page_icon="📚", layout="wide")
-st.title("ResearchRAG")
-st.caption("ACL Anthology · 842 papers · 152K adaptive chunks")
 
 with st.sidebar:
-    st.header("Settings")
+    st.markdown("## ResearchRAG")
+    st.caption("ACL Anthology · 842 papers · 152K chunks")
+    st.divider()
+
     ollama_model = st.selectbox(
         "Model",
-        ["qwen3:8b", "qwen3:14b", "qwen3:30b-a3b", "qwen2.5:14b", "qwen2.5:7b"],
+        [
+            "qwen3:14b",
+            "qwen3.5:35b",
+            "qwen3.5:9b",
+            "glm-4.7",
+            "qwen3:8b",
+            "qwen3:30b-a3b",
+        ],
         index=0,
+        help="Ollama model used for reasoning and generation.",
     )
     retrieval = st.selectbox(
         "Retrieval",
         ["hybrid", "semantic", "bm25"],
         index=0,
+        help="hybrid: FAISS + BM25 fused via RRF (recommended)\nsemantic: dense vectors only\nbm25: keyword match only",
     )
-    reflect = st.toggle("Reflection pass", value=False, help="Run a second LLM pass to catch citation gaps.")
+    thinking = st.toggle(
+        "Thinking mode",
+        value=False,
+        help="Qwen3 internal reasoning pass before answering. Better quality, slower. Turn off for faster responses.",
+    )
+    reflect = st.toggle(
+        "Reflection pass",
+        value=False,
+        help="Run a second LLM pass after generation to catch missing citations. Adds ~5s.",
+    )
+
     st.divider()
     if st.button("New conversation", use_container_width=True):
         st.session_state.messages = []
@@ -134,6 +212,64 @@ if "thread_id" not in st.session_state:
     st.session_state.thread_id = str(uuid4())
 
 # ---------------------------------------------------------------------------
+# Load agent — background thread, non-blocking
+# ---------------------------------------------------------------------------
+
+model_key = (ollama_model, retrieval)
+_state = _bg_state()
+
+if model_key not in _state["results"]:
+    # Kick off background load if not already running.
+    if model_key not in _state["threads"] or not _state["threads"][model_key].is_alive():
+        t = threading.Thread(
+            target=_load_agent_bg, args=(model_key, ollama_model, retrieval), daemon=True
+        )
+        _state["threads"][model_key] = t
+        t.start()
+
+    # Render the page layout but keep input disabled while loading.
+    if not st.session_state.messages:
+        st.markdown("### What would you like to know?")
+        st.caption("Ask anything about ACL, EMNLP, NAACL, EACL, or COLING 2025 papers.")
+
+    st.chat_input(f"Loading {ollama_model}…", disabled=True)
+    with st.spinner(f"Loading **{ollama_model}**…"):
+        time.sleep(0.4)
+    st.rerun()
+    st.stop()
+
+bg = _state["results"][model_key]
+if not bg["ok"]:
+    st.error(
+        f"Failed to load **{ollama_model}**. Check that Ollama is running and the model is pulled.\n\n"
+        f"```\n{bg['error']}\n```"
+    )
+    st.stop()
+
+agent, rag_chain = bg["result"]
+
+# ---------------------------------------------------------------------------
+# Welcome screen (empty state)
+# ---------------------------------------------------------------------------
+
+# Hide welcome screen if a prefill is already queued (button was just clicked).
+if not st.session_state.messages and "_prefill" not in st.session_state:
+    st.markdown("### What would you like to know?")
+    st.caption("Ask anything about ACL, EMNLP, NAACL, EACL, or COLING 2025 papers.")
+    cols = st.columns(2)
+    for i, example in enumerate(_EXAMPLE_QUERIES):
+        if cols[i % 2].button(example, use_container_width=True, key=f"example_{i}"):
+            st.session_state["_prefill"] = example
+            st.rerun()
+
+# Inject a pre-filled query from the welcome screen button click.
+if "_prefill" in st.session_state:
+    prefill = st.session_state.pop("_prefill")
+    st.session_state.messages.append({"role": "user", "content": prefill})
+    st.session_state["_run_prefill"] = prefill
+    st.rerun()
+
+# ---------------------------------------------------------------------------
 # Replay conversation history
 # ---------------------------------------------------------------------------
 
@@ -142,36 +278,30 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 # ---------------------------------------------------------------------------
-# Load agent at startup (cached — runs once per unique model+retrieval combo)
-# ---------------------------------------------------------------------------
-
-try:
-    agent, rag_chain = load_agent(ollama_model, retrieval)
-except Exception as exc:
-    st.error(
-        f"Failed to load agent. Check that Ollama is running and "
-        f"the model **{ollama_model}** is pulled.\n\n"
-        f"```\n{exc}\n```"
-    )
-    st.stop()
-
-# ---------------------------------------------------------------------------
 # Chat input + streaming response
 # ---------------------------------------------------------------------------
 
-if prompt := st.chat_input("Ask about ACL Anthology research papers…"):
+_pending_query = st.session_state.pop("_run_prefill", None)
+prompt = st.chat_input("Ask about ACL Anthology research papers…") or _pending_query
+
+if prompt:
     clean_prompt, flagged = sanitize_query(prompt)
 
-    with st.chat_message("user"):
-        st.markdown(clean_prompt)
-        if flagged:
-            st.caption("Injection pattern detected and stripped from query.")
+    # Qwen3 /no_think prefix disables the internal reasoning pass for faster responses.
+    agent_prompt = clean_prompt if thinking else f"/no_think {clean_prompt}"
 
-    st.session_state.messages.append({"role": "user", "content": clean_prompt})
+    if flagged:
+        st.toast("Injection pattern detected and stripped from query.", icon="⚠️")
+
+    if not _pending_query:
+        # Prefill queries are already in history; only add typed ones.
+        with st.chat_message("user"):
+            st.markdown(clean_prompt)
+        st.session_state.messages.append({"role": "user", "content": clean_prompt})
 
     with st.chat_message("assistant"):
-        # Agent steps shown in a live status box; collapses when done.
-        agent_status = st.status("Thinking…", expanded=False)
+        # Status box starts expanded so the user can follow tool calls live.
+        agent_status = st.status("Thinking…", expanded=True)
         answer_area = st.empty()
 
         accumulated = ""
@@ -180,22 +310,23 @@ if prompt := st.chat_input("Ask about ACL Anthology research papers…"):
         tool_calls_log = []
         t_start = time.perf_counter()
 
-        for event in run_react_agent(agent, clean_prompt, thread_id=st.session_state.thread_id):
+        for event in run_react_agent(agent, agent_prompt, thread_id=st.session_state.thread_id):
             etype = event["type"]
 
             if etype == "tool_call":
                 n_searches += 1
                 tool = event["tool"]
-                q = event["args"].get("query", "")[:70]
-                tool_calls_log.append({"tool": tool, "query": q})
+                line = _tool_label(tool, event["args"])
+                tool_calls_log.append({"tool": tool, "query": event["args"].get("query", "")[:70]})
+                agent_status.update(label=f"Searching… ({n_searches})")
                 with agent_status:
-                    st.markdown(f"**{tool}** — {q}")
+                    st.caption(line)
 
             elif etype == "token":
                 if not generating:
-                    # First token — collapse the status box
+                    # First token — collapse the status box.
                     agent_status.update(
-                        label=f"Searched {n_searches} time(s)",
+                        label=f"Read {n_searches} source{'s' if n_searches != 1 else ''}",
                         state="complete",
                         expanded=False,
                     )
@@ -211,12 +342,26 @@ if prompt := st.chat_input("Ask about ACL Anthology research papers…"):
                 agent_status.update(label="Error", state="error", expanded=True)
                 with agent_status:
                     st.error(event["error"])
+                # Clear the MemorySaver checkpoint so the next turn isn't
+                # poisoned by the incomplete LangGraph state left by the crash.
+                agent.checkpointer.delete_thread(st.session_state.thread_id)
                 break
 
-        # Collapse status in case we never got tokens (e.g. cached answer)
+        latency = time.perf_counter() - t_start
+
+        # Finalise status label if we never got tokens (e.g. direct answer).
         if not generating:
+            label = (
+                f"Read {n_searches} source{'s' if n_searches != 1 else ''}"
+                if n_searches else "Done"
+            )
+            agent_status.update(label=label, state="complete", expanded=False)
+
+        # Update status label to include latency now that we know the total time.
+        if generating or n_searches:
+            sources = f"{n_searches} source{'s' if n_searches != 1 else ''}"
             agent_status.update(
-                label=f"Searched {n_searches} time(s)",
+                label=f"Read {sources} · {latency:.1f}s",
                 state="complete",
                 expanded=False,
             )
@@ -246,7 +391,6 @@ if prompt := st.chat_input("Ask about ACL Anthology research papers…"):
 
         answer_area.markdown(accumulated)
 
-        # Log the turn to JSONL.
         _log_turn(
             thread_id=st.session_state.thread_id,
             query=clean_prompt,
@@ -254,7 +398,7 @@ if prompt := st.chat_input("Ask about ACL Anthology research papers…"):
             model=ollama_model,
             retrieval=retrieval,
             tool_calls=tool_calls_log,
-            latency_s=time.perf_counter() - t_start,
+            latency_s=latency,
             reflected=reflect and accumulated != "",
             flagged=flagged,
         )

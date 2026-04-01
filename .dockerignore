@@ -1,0 +1,10 @@
+myenv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.git/
+logs/
+data/
+artifacts/
+experiments/eval_data/
