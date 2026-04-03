@@ -13,7 +13,7 @@ ResearchRAG is being developed incrementally, starting with traditional RAG and 
 - **BM25**: bm25s (sparse matrices, mmap persistence)
 - **Reranker**: BAAI/bge-reranker-v2-m3 (568M params, multilingual SOTA)
 - **Chunking**: HybridStructuredChunker (section-aware, citation-aware, paragraph-based)
-- **LLM (local)**: ChatOllama (langchain-ollama) — default `qwen3:8b`; or ChatHuggingFace — both support bind_tools
+- **LLM (local)**: ChatOllama (langchain-ollama) — default `qwen3:14b`; or ChatHuggingFace — both support bind_tools
 - **Agentic**: LangGraph create_react_agent + MemorySaver (conversational memory)
 - **Observability**: LangSmith (automatic tracing of all LangChain/LangGraph calls)
 - **Primary Data Source**: ACL Anthology
@@ -124,19 +124,39 @@ This is the key insight: basic chunking is forgiving of single-query retrieval b
 
 ---
 
-### Phase 6: UI and Performance
+### Phase 6: UI and Production
 
-**Status**: In Progress
+**Status**: Completed
 
 **Goal**: Streamlit chat interface and performance optimisations without changing retrieval architecture.
 
 **Completed**:
 - [x] Streamlit chat UI (`app.py`) — streaming responses, live agent status via `st.status`, session management, model selector
 - [x] Reranker on MPS with float16 — ~2x faster inference on Apple Silicon; `CrossEncoderReranker` auto-detects MPS/CUDA/CPU
-- [x] Default LLM upgraded to `qwen3:8b` — better instruction-following and citation adherence than `qwen2.5:7b`
+- [x] Default LLM upgraded to `qwen3:14b` — better instruction-following and citation adherence
+- [x] Reranker score cache — `(query, chunk_id)` keyed instance dict; skips redundant forward passes on repeated chunks across turns
+- [x] Thinking mode toggle — `/no_think` prefix for Qwen3 models; off by default for faster responses
+- [x] Docker setup — `Dockerfile`, `docker-compose.yml`, `.dockerignore`; Ollama sidecar mounts `~/.ollama`, `docker compose up --build` is all that's needed
 
-**Future**:
-- [ ] PDF upload in UI — let users add papers to the index live
+### Phase 7: Evaluation and Credibility
+
+**Status**: In Progress
+
+**Goal**: Establish objective, multi-dimensional evidence that ResearchRAG outperforms simpler baselines — covering retrieval precision, answer quality, hallucination rate, and faithfulness.
+
+**Completed**:
+- [x] 200-query pipeline (`experiments/comprehensive_eval.py`) — 7 tiers: factoid, comparison, synthesis, multi-hop, corpus_specific, out_of_corpus, adversarial
+- [x] RAGAS automated evaluation — Faithfulness + Answer Relevancy with Gemini 2.5 Flash judge and gemini-embedding-001
+
+**In Progress**:
+- [ ] Full 200-query run (currently at 10-query smoke test)
+- [ ] Human spot-checks on judge disagreements (high-variance queries)
+
+**Pending**:
+- [ ] BEIR or MTEB retrieval benchmarks for comparison against published baselines
+- [ ] Per-tier breakdown at full scale — agent advantage expected to widen on synthesis and multi-hop tiers
+
+---
 
 ## Data Sources
 

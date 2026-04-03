@@ -1,16 +1,14 @@
 # Evaluation
 
-Two complementary scripts: **latency benchmarking** (`experiments/benchmark.py`) and **precision evaluation** (`experiments/evaluate.py`).
+Results across all development phases. Each phase maps to [PLAN.md](PLAN.md).
 
 ---
 
 ## Latency Benchmark
 
-```bash
-python experiments/benchmark.py --output experiments/benchmark_results.json
-```
+Script: `experiments/benchmark.py`
 
-### Chunking ablation — basic (54K) vs adaptive (152K chunks)
+### Chunking ablation
 
 | Config | Avg ms | P50 ms | P90 ms |
 |---|---:|---:|---:|
@@ -46,7 +44,9 @@ The cross-encoder (bge-reranker-v2-m3, 568M params) adds ~3.2s per query — 1,2
 
 ---
 
-## Precision Evaluation
+## Retrieval Precision
+
+Script: `experiments/evaluate.py`
 
 Human-labeled evaluation over 5 gold queries derived from actual ACL 2025 corpus papers. Queries were chosen to span a range of difficulty: narrow self-contained topics, broad topic surveys, and multi-concept queries requiring content that crosses section boundaries.
 
@@ -89,33 +89,17 @@ Human-labeled evaluation over 5 gold queries derived from actual ACL 2025 corpus
 | Membership inference | 0.250 | **0.125** | −0.13 | 0.400 | **0.000** |
 | KBQA logical forms | 1.000 | **1.000** | 0 | 1.000 | 1.000 |
 
----
+### Analysis
 
-## Analysis
+**Why basic wins on MRR without reranking** — Paragraphs co-locate related ideas into a single coherent unit, so the most relevant chunk reliably floats to position 1 (MRR=1.0). The trade-off: positions 2–10 are noisier — anything with overlapping vocabulary gets pulled in regardless of topical focus.
 
-### Why basic wins on MRR without reranking
+**Why adaptive loses without reranking — and how reranking fixes it** — Adaptive section-splits introduce two problems: **(1) BM25 IDF dilution** — 3× more chunks means each term appears in more documents, lowering its IDF and weakening the signal that a chunk is specifically about the topic. **(2) Multi-concept fragmentation** — a query spanning two ideas (problem + solution) maps to two separate section chunks, neither of which scores well alone. The cross-encoder fixes both: running full bidirectional attention over [CLS] query [SEP] chunk [SEP], it recognises the connection between query framing and chunk content even when surface terms don't overlap. This is why KBQA jumps from MRR=0.25 to 1.0 under reranking.
 
-Paragraphs co-locate related ideas into a single coherent unit, so the most relevant chunk reliably floats to position 1 (MRR=1.0). The trade-off: positions 2–10 are noisier — anything with overlapping vocabulary gets pulled in regardless of topical focus.
+**Why reranking hurts basic MRR** — Position 1 is already correct on basic chunks. Reranking expands the candidate pool to 20, giving the cross-encoder room to promote false positives — chunks with the right vocabulary in the wrong context (e.g. data contamination papers matching a membership inference query). Where the retriever was already correct, reranking adds noise.
 
-### Why adaptive loses without reranking — and how reranking fixes it
+**The membership inference anomaly** — The worst case: reranking hurts on both strategies, catastrophically on adaptive (MRR 0.5 → 0.125, P@5 → 0.0). The query's phrasing ("detect whether text was used in pre-training") overlaps with adjacent topics — privacy auditing, data contamination, memorisation. On adaptive, the relevant content is split across narrow section fragments, none self-contained enough for the cross-encoder to score confidently. The reranker shuffles noise rather than surfacing signal.
 
-Adaptive section-splits introduce two problems: **(1) BM25 IDF dilution** — 3× more chunks means each term appears in more documents, lowering its IDF and weakening the signal that a chunk is specifically about the topic. **(2) Multi-concept fragmentation** — a query spanning two ideas (problem + solution) maps to two separate section chunks, neither of which scores well alone. The cross-encoder fixes both: running full bidirectional attention over [CLS] query [SEP] chunk [SEP], it recognises the connection between query framing and chunk content even when surface terms don't overlap. This is why KBQA jumps from MRR=0.25 to 1.0 under reranking.
-
-### Why reranking hurts basic MRR
-
-Position 1 is already correct on basic chunks. Reranking expands the candidate pool to 20, giving the cross-encoder room to promote false positives — chunks with the right vocabulary in the wrong context (e.g. data contamination papers matching a membership inference query). Where the retriever was already correct, reranking adds noise.
-
-### The membership inference anomaly
-
-The worst case: reranking hurts on both strategies, catastrophically on adaptive (MRR 0.5 → 0.125, P@5 → 0.0). The query's phrasing ("detect whether text was used in pre-training") overlaps with adjacent topics — privacy auditing, data contamination, memorisation. On adaptive, the relevant content is split across narrow section fragments, none self-contained enough for the cross-encoder to score confidently. The reranker shuffles noise rather than surfacing signal.
-
-### Broad topic queries
-
-When hundreds of papers partially touch the topic (context window extension), the retriever cannot discriminate primary contributions from passing mentions. Basic gets position 1 right (MRR=1.0) but P@5=0.2. Adaptive + rerank inverts this — abstract/introduction sections explicitly state contributions, so the cross-encoder can separate "we propose X" from "prior work includes X", yielding P@5=1.0. The one case where adaptive + rerank strictly dominates.
-
----
-
-## When to Use Which Configuration
+**Broad topic queries** — When hundreds of papers partially touch the topic (context window extension), the retriever cannot discriminate primary contributions from passing mentions. Basic gets position 1 right (MRR=1.0) but P@5=0.2. Adaptive + rerank inverts this — abstract/introduction sections explicitly state contributions, so the cross-encoder can separate "we propose X" from "prior work includes X", yielding P@5=1.0. The one case where adaptive + rerank strictly dominates.
 
 ### Configuration decision guide
 
@@ -139,9 +123,7 @@ When hundreds of papers partially touch the topic (context window extension), th
 | **Customer support / FAQ** | Basic, no rerank | Short self-contained documents; no structure to exploit. Retriever already gets position 1 correct — reranker overhead is unjustifiable. |
 | **News / web content** | Basic, hybrid RRF, no rerank | No reliable section structure. Paragraphs are the natural unit. Semantic leg helps with paraphrase across outlets where BM25 term matching is inconsistent. |
 
----
-
-## Usage
+### Usage
 
 ```bash
 # Label + evaluate on basic index, no reranking (default)
@@ -170,15 +152,11 @@ python experiments/evaluate.py --compare \
     --file-b experiments/labels_hybrid_adaptive_rerank.json
 ```
 
-## Notes
-
-- **5 queries** — directional signals, not statistically conclusive. Differences below ~0.1 MRR or ~0.05 nDCG should not be over-interpreted.
-- **Recall is not reported** — labelling all relevant chunks across 54K–152K is infeasible. All metrics are precision-based (standard IR pooling practice).
-- **Labels are independent per chunking** — basic and adaptive were labelled separately; a relevant chunk in basic may not map to any single adaptive chunk.
+**Notes**: 5 queries — directional signals, not statistically conclusive. Differences below ~0.1 MRR or ~0.05 nDCG should not be over-interpreted. Recall is not reported — labelling all relevant chunks across 54K–152K is infeasible. Labels are independent per chunking — a relevant chunk in basic may not map to any single adaptive chunk.
 
 ---
 
-## Phase 5: ReAct Agent Evaluation
+## ReAct Agent Evaluation
 
 Script: `experiments/agent_eval_long.py`
 Model: `qwen2.5:7b` via Ollama | Index: adaptive (152K chunks, HNSW) | Retriever: hybrid RRF
@@ -223,11 +201,9 @@ Model: `qwen2.5:7b` via Ollama | Index: adaptive (152K chunks, HNSW) | Retriever
 | `search_papers` | 4× |
 | (no tool call) | 0× |
 
----
+### Prompt engineering notes
 
-## Agent Prompt Engineering Notes
-
-Getting citation behaviour right from a 7B local model required several iterations. Key findings:
+Getting citation behaviour right from a 7B local model required several iterations.
 
 **What didn't work**
 - Long, rule-heavy system prompts — 7B models echo template text back or follow only the last rule
@@ -247,3 +223,85 @@ Getting citation behaviour right from a 7B local model required several iteratio
 | `llama3.1:8b` | 10% | 20% | Better tool selection, worse citation recall |
 
 Qwen cites more reliably; Llama hallucinates less. For a research assistant where citations matter most, Qwen is the better fit at 7B scale.
+
+---
+
+## Comprehensive System Evaluation
+
+Script: `experiments/comprehensive_eval.py`
+Four systems compared across 200 queries spanning 7 tiers. Smoke test (10 queries, all tiers sampled) results below.
+
+### Systems
+
+| System | Description |
+|---|---|
+| **researchrag** | Full ReAct agent — hybrid RRF retrieval + cross-encoder rerank + qwen3:14b |
+| **naive** | Same retrieval + reranking, single-pass generation (no agent) |
+| **gemini_rag** | Same retrieval + reranking, Gemini 2.5 Flash for generation |
+| **gemini_only** | Gemini 2.5 Flash with no retrieval — pure LLM knowledge |
+
+### LLM-as-judge overall scores (0–5)
+
+| System | Overall |
+|---|---:|
+| gemini_rag | **4.80** |
+| researchrag | 4.23 |
+| naive | 4.08 |
+| gemini_only | 3.13 |
+
+### Comparison stories
+
+**Story 1 — Does retrieval add value?** (gemini_rag vs gemini_only — same LLM, with vs without retrieval)
+- Overall: **4.80 vs 3.13** (+1.67 with retrieval)
+- `corpus_grounding` gap: **+2.90** — retrieval is the single biggest lever for preventing hallucination
+
+**Story 2 — Does the agent add value?** (researchrag vs naive)
+- Overall: **4.23 vs 4.08** (+0.15)
+- Agent wins on `completeness` (+1.29) and `relevance` (+0.42) — advantage concentrates on complex, multi-concept queries
+
+**Story 3 — Corpus specialisation** (RAG systems on corpus_specific + out_of_corpus tiers)
+- gemini_rag: **5.0/5** on corpus_specific — retrieval grounds every answer in corpus content
+- gemini_only: **0.0/5** on out_of_corpus — no retrieval, no refusal, pure hallucination
+
+### Usage
+
+```bash
+GEMINI_API_KEY=<key> python experiments/comprehensive_eval.py --run --max-queries 10
+GEMINI_API_KEY=<key> python experiments/comprehensive_eval.py --judge
+python experiments/comprehensive_eval.py --report
+```
+
+---
+
+## RAGAS Automated Evaluation
+
+Script: `experiments/comprehensive_eval.py --eval-ragas`
+Judge: Gemini 2.5 Flash | Embeddings: gemini-embedding-001 | n=10 queries
+
+Two reference-free metrics:
+- **Faithfulness** — what fraction of answer claims are supported by retrieved chunks?
+- **Answer Relevancy** — how directly does the answer address the question asked?
+
+### Results
+
+| System | Faithfulness | Answer Relevancy |
+|---|---:|---:|
+| **researchrag** | 0.41 | **0.77** |
+| naive | 0.60 | 0.67 |
+| gemini_rag | **0.82** | 0.48 |
+
+### Analysis
+
+**ResearchRAG leads on answer relevancy (0.77)** — the highest of any system. The ReAct agent's query decomposition and multi-query retrieval ensures the answer directly addresses what was asked, rather than reciting what was retrieved.
+
+**Gemini RAG wins on faithfulness (0.82) but loses on relevancy (0.48)** — it closely echoes the retrieved chunks (high faithfulness) but fails to synthesise them into an answer that addresses the question (low relevancy). High faithfulness with low relevancy is the signature of a system that retrieves and pastes rather than reasons.
+
+**Naive RAG sits in the middle** on both metrics (0.60 / 0.67) — no decomposition, no multi-query fusion, single-pass generation.
+
+ResearchRAG is the only system that achieves both competitive faithfulness and the highest answer relevancy — reflecting that synthesis across multiple papers produces answers users actually asked for.
+
+### Usage
+
+```bash
+GEMINI_API_KEY=<key> python experiments/comprehensive_eval.py --eval-ragas --max-queries 10
+```
