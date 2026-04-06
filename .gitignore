@@ -40,6 +40,8 @@ myenv/
 *.swo
 *~
 .DS_Store
+CLAUDE.*
+.claude/*
 
 # Project-specific
 # PDFs
