@@ -24,7 +24,7 @@ Usage
 
 from __future__ import annotations
 
-from typing import Generator, Tuple
+import re
 
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -87,7 +87,7 @@ def build_react_agent(rag_chain):
     )
 
 
-def run_react_agent(agent, question: str, thread_id: str = "default") -> Generator[dict, None, None]:
+def run_react_agent(agent, question, thread_id="default"):
     """
     Stream a ReAct agent query and yield human-readable event dicts.
 
@@ -195,7 +195,7 @@ ISSUES FOUND: yes/no
 CRITIQUE: [one bullet per hard failure found, or "None" if no hard failures]"""
 
 
-def reflect_on_answer(llm, question: str, answer: str) -> Tuple[str, bool]:
+def reflect_on_answer(llm, question, answer):
     """
     Critique a draft answer for citation gaps and unsupported claims.
 
@@ -211,8 +211,7 @@ def reflect_on_answer(llm, question: str, answer: str) -> Tuple[str, bool]:
     """
     # Truncate for the reflection prompt, but check citations on the full
     # answer first so truncation doesn't cause false "ZERO CITATIONS" flags.
-    import re as _re
-    has_citations = bool(_re.search(r"\[\d+\]", answer))
+    has_citations = bool(re.search(r"\[\d+\]", answer))
     truncated = answer[:3000]
     if len(answer) > 3000 and has_citations:
         truncated += "\n[... truncated; full answer contains citations]"

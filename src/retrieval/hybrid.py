@@ -1,5 +1,4 @@
 import numpy as np
-from typing import List, Dict, Optional, Any
 from pydantic import ConfigDict
 from .semantic import SemanticRetriever
 from .bm25 import BM25Retriever
@@ -103,7 +102,6 @@ class HybridRetriever(BaseRetriever):
         # Sorting by RRF score (higher is better)
         sorted_chunks = sorted(rrf_scores.items(), key=lambda x: x[1], reverse = True)[:top_k]
 
-        # Final payload preparation :P
         results = []
         for rank, (chunk_id, score) in enumerate(sorted_chunks, 1):
             result = all_chunks[chunk_id].copy()
@@ -162,7 +160,6 @@ class HybridRetriever(BaseRetriever):
         # Sorting by combined score
         sorted_chunks = sorted(combined_scores.items(), key=lambda x: x[1], reverse = True)[:top_k]
 
-        # Final payload preparation :P
         results = []
         for rank, (chunk_id, score) in enumerate(sorted_chunks, 1):
             result = all_chunks[chunk_id].copy()
@@ -172,14 +169,7 @@ class HybridRetriever(BaseRetriever):
 
         return results
 
-    def _get_relevant_documents(
-        self,
-        query: str,
-        *,
-        run_manager: Optional[CallbackManagerForRetrieverRun] = None,
-        top_k: Optional[int] = None,
-        filters: Optional[Dict] = None
-    ) -> List[Document]:
+    def _get_relevant_documents(self, query, *, run_manager=None, top_k=None, filters=None):
         """
         Retrieve documents relevant to a query (LangChain-compatible method).
 

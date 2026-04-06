@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +63,7 @@ _DECOMPOSE_HUMAN = "Query: {query}\n\nSub-queries:"
 class SubQuery:
     """A single focused sub-query derived from the original user query."""
     query: str
-    section_hint: Optional[str] = None   # e.g. "methods", "results", None → general
+    section_hint: str = None   # e.g. "methods", "results", None → general
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +84,7 @@ class QueryDecomposer:
         self.llm = llm
         self.max_sub_queries = max_sub_queries
 
-    def decompose(self, query: str) -> List[SubQuery]:
+    def decompose(self, query):
         """
         Return a list of SubQuery objects for the given query.
 
@@ -110,7 +109,7 @@ class QueryDecomposer:
     # LLM pass
     # ------------------------------------------------------------------
 
-    def _llm_decompose(self, query: str) -> List[SubQuery]:
+    def _llm_decompose(self, query):
         from langchain_core.messages import HumanMessage, SystemMessage
 
         response = self.llm.invoke([
@@ -128,7 +127,7 @@ class QueryDecomposer:
             return parsed  # still valid — single clean sub-query is fine
         return parsed
 
-    def _parse_llm_output(self, raw: str) -> List[SubQuery]:
+    def _parse_llm_output(self, raw):
         """
         Parse numbered-list output from the LLM.
 
@@ -137,7 +136,7 @@ class QueryDecomposer:
           1. sub-query text | section:methods
           1) sub-query text
         """
-        sub_queries: List[SubQuery] = []
+        sub_queries = []
 
         for line in raw.splitlines():
             line = line.strip()
@@ -171,10 +170,10 @@ class QueryDecomposer:
     # Heuristic fallback
     # ------------------------------------------------------------------
 
-    def _heuristic_decompose(self, query: str) -> List[SubQuery]:
+    def _heuristic_decompose(self, query):
         """Keyword-based decomposition for common research query patterns."""
         q = query.lower()
-        sub_queries: List[SubQuery] = []
+        sub_queries = []
 
         # Comparison: "compare X and Y" / "X vs Y" / "differences between X and Y"
         if re.search(r"\bcompare\b|\bvs\.?\b|\bversus\b|\bdifference(?:s)?\s+between\b", q):

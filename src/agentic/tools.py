@@ -22,12 +22,12 @@ import re
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from typing import List, Optional
 
 from langchain_core.tools import tool
 
 from .safety import sanitize_query, wrap_retrieved_content
 from src.retrieval.query_parser import QueryParser
+
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,6 @@ def set_rag_chain(rag_chain) -> None:
     # Probe corpus for section_type metadata — used to decide whether section
     # filters are worth applying. Basic chunks lack this; adaptive chunks have it.
     try:
-        import json
         chunks_path = getattr(rag_chain.retriever, "chunks_path", None)
         if chunks_path is None:
             # HybridRetriever — try the inner semantic retriever
@@ -94,7 +93,7 @@ def set_rag_chain(rag_chain) -> None:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _search(query: str, top_k: int, filters: Optional[dict] = None) -> list:
+def _search(query, top_k, filters=None):
     """
     Unified search that routes to the correct retriever API.
 
@@ -141,7 +140,7 @@ def _search(query: str, top_k: int, filters: Optional[dict] = None) -> list:
     return retriever.search(clean_query, top_k=top_k, filters=merged_filters)
 
 
-def _rrf_merge(result_lists: List[List[dict]], top_k: int, k: int = 60) -> List[dict]:
+def _rrf_merge(result_lists, top_k, k=60):
     """
     Reciprocal Rank Fusion across multiple result lists.
 
@@ -170,7 +169,7 @@ def _rrf_merge(result_lists: List[List[dict]], top_k: int, k: int = 60) -> List[
     return merged
 
 
-def _detect_sections(query: str) -> List[str]:
+def _detect_sections(query):
     """Return section types whose keywords appear in the query."""
     q = query.lower()
     detected = []
@@ -182,7 +181,7 @@ def _detect_sections(query: str) -> List[str]:
     return detected
 
 
-def _format_chunks(chunks: list, query: str, label: str = "") -> str:
+def _format_chunks(chunks, query, label=""):
     """Format retrieved chunks as a cited, injection-safe string for the agent."""
     if not chunks:
         return "No results."
@@ -376,7 +375,7 @@ def detect_relevant_sections(query: str) -> str:
 _NCBI_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
 
 
-def _pubmed_fetch(query: str, max_results: int) -> list[dict]:
+def _pubmed_fetch(query, max_results):
     """
     Query NCBI E-utilities (esearch + efetch) and return article dicts.
 

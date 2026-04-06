@@ -18,7 +18,7 @@ _MAX_QUERY_LENGTH = 500
 
 # Patterns that are characteristic of prompt injection attempts.
 # We log a warning and strip them rather than blocking outright.
-_INJECTION_PATTERNS: list[re.Pattern] = [
+_INJECTION_PATTERNS = [
     re.compile(p, re.IGNORECASE)
     for p in [
         r"ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+instructions?",
@@ -40,7 +40,7 @@ _INJECTION_PATTERNS: list[re.Pattern] = [
 ]
 
 
-def sanitize_query(query: str) -> tuple[str, bool]:
+def sanitize_query(query):
     """
     Sanitize a user query and detect injection attempts.
 
@@ -89,7 +89,7 @@ def sanitize_query(query: str) -> tuple[str, bool]:
     return cleaned, flagged
 
 
-def wrap_retrieved_content(text: str) -> str:
+def wrap_retrieved_content(text):
     """
     Wrap a retrieved chunk's text in explicit markers.
 

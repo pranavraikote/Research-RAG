@@ -1,5 +1,7 @@
+import json
 import logging
 import time
+import urllib.request
 
 import torch
 
@@ -31,8 +33,6 @@ class RAGChain:
             True if Ollama is running and the model is available.
         """
         try:
-            import urllib.request
-            import json
             req = urllib.request.Request("http://localhost:11434/api/tags", method="GET")
             with urllib.request.urlopen(req, timeout=2) as response:
                 data = json.loads(response.read())
@@ -91,7 +91,6 @@ class RAGChain:
 
         if llm_provider == "ollama":
             ollama_kwargs = {"model": llm_model, "temperature": 0}
-            # There is scope to control this
             if llm_model.startswith("qwen3"):
                 ollama_kwargs["think"] = False
                 # ollama_kwargs["think"] = True
@@ -183,7 +182,6 @@ class RAGChain:
         else:
             raise ValueError(f"Unknown LLM provider: {llm_provider}. Use 'ollama' or 'huggingface'")
         
-        # Defining the all important system prompt
         self.system_prompt = """You are a helpful research assistant. Answer questions using the provided context from research papers.
                         CITATION RULES:
                         - Each source is numbered [1], [2], [3], etc.
@@ -566,10 +564,7 @@ class RAGChain:
             "top_k": top_k
         }
         
-        # Invoking the chain :)
         chain_result = self.rag_chain.invoke(chain_input)
-        
-        # Results time :)
         context = chain_result["context"]
         citation_map = chain_result["citation_map"]
         sources = chain_result["sources"]
