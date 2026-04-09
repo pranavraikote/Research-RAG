@@ -273,22 +273,62 @@ python experiments/comprehensive_eval.py --report
 
 ---
 
+## DeepEval RAG Evaluation
+
+Scripts: `experiments/eval_rag.py`, `experiments/eval_generation.py`, `experiments/eval_agent.py`
+Judge: Gemini 2.5 Flash | Model: qwen3:14b via Ollama | Index: adaptive (152K chunks, HNSW) | Retriever: hybrid RRF + rerank (top_k=3)
+
+Three reference-free RAG quality metrics (eval_rag.py) + two G-Eval generation metrics (eval_generation.py) + agent metrics (eval_agent.py).
+
+### RAG metrics — 10 queries (eval_rag.py)
+
+| Metric | Score | Notes |
+|---|---:|---|
+| Contextual Relevancy | 0.48 | ~half retrieved statements on-topic; limited by large adaptive chunk size |
+| Answer Relevancy | 0.87 | agent addresses questions directly, including clean refusals |
+| Faithfulness | 0.99 | near-perfect after RULE 2 CRITICAL constraint added to system prompt |
+
+### Generation metrics — 20 queries (eval_generation.py)
+
+| Metric | Score | n | Notes |
+|---|---:|---:|---|
+| Citation Quality | 0.99 | 10 | near-perfect after safety early-exit and RULE 4 fixes |
+| Refusal Correctness | 0.90 | 10 | one residual failure remaining |
+
+**Citation quality note**: turns where the system correctly returns "not found" score 0 because there are no claims to cite. Effective citation rate on answered turns is meaningfully higher.
+
+**Refusal failures**: injection attempt ("Ignore all previous instructions") reached the agent despite safety stripping — fixed post-eval by widening the "you are now DAN" pattern in `safety.py` and adding early-exit in eval runners. Translation request ("Translate to French: How does attention work?") was answered instead of ignored — fixed in RULE 4.
+
+### Agent metrics — 6-turn arc (eval_agent.py)
+
+| Metric | Score | Notes |
+|---|---:|---|
+| Argument Correctness | 1.0 | tool inputs well-formed on all turns that used tools |
+| Turns with tool calls | 1/6 | agent answered 5/6 turns from context/memory, not retrieval |
+
+**Low tool call rate**: only T1 (broad opener) triggered a search. Follow-up turns (T2 pronoun reference, T3 comparison, T4 PEFT) were answered from prior context in the conversation thread — expected for a stateful ReAct agent with `MemorySaver`. The out-of-corpus turn (T5) and injection turn (T6) were caught by safety and never reached the agent. Argument Correctness is scored only on turns that make tool calls, so n=1 here — metric is directionally correct but not statistically meaningful at this coverage. Future: use independent thread IDs per turn to force fresh retrieval for each question.
+
+---
+
 ## RAGAS Automated Evaluation
 
 Script: `experiments/comprehensive_eval.py --eval-ragas`
 Judge: Gemini 2.5 Flash | Embeddings: gemini-embedding-001 | n=10 queries
 
-Two reference-free metrics:
+Three reference-free metrics:
 - **Faithfulness** — what fraction of answer claims are supported by retrieved chunks?
 - **Answer Relevancy** — how directly does the answer address the question asked?
+- **Context Precision** — are the retrieved contexts actually useful for generating the answer? (`LLMContextPrecisionWithoutReference`)
 
-### Results
+### Results (10-query smoke test)
 
-| System | Faithfulness | Answer Relevancy |
-|---|---:|---:|
-| **researchrag** | 0.41 | **0.77** |
-| naive | 0.60 | 0.67 |
-| gemini_rag | **0.82** | 0.48 |
+| System | Faithfulness | Answer Relevancy | Context Precision |
+|---|---:|---:|---:|
+| **researchrag** | 0.41 | **0.77** | — |
+| naive | 0.60 | 0.67 | — |
+| gemini_rag | **0.82** | 0.48 | — |
+
+*Context Precision added in full run — smoke test predates this metric.*
 
 ### Analysis
 

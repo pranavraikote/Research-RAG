@@ -24,7 +24,7 @@ _INJECTION_PATTERNS = [
         r"ignore\s+(?:all\s+)?(?:previous|prior|above|earlier)\s+instructions?",
         r"disregard\s+(?:all\s+)?(?:previous|prior|above|earlier|the\s+)\w*",
         r"forget\s+(?:everything|all\s+(?:previous|prior|above))",
-        r"you\s+are\s+now\s+(?:a|an|the)\s+",
+        r"you\s+are\s+now\s+",   # covers "you are now DAN", "you are now a...", etc.
         r"new\s+(?:system\s+)?(?:instructions?|prompt|role|persona)\s*:",
         r"act\s+as\s+(?:a|an|the|if\s+you\s+were)",
         r"pretend\s+(?:you\s+are|to\s+be)",

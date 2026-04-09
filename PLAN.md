@@ -145,16 +145,18 @@ This is the key insight: basic chunking is forgiving of single-query retrieval b
 **Goal**: Establish objective, multi-dimensional evidence that ResearchRAG outperforms simpler baselines — covering retrieval precision, answer quality, hallucination rate, and faithfulness.
 
 **Completed**:
-- [x] 200-query pipeline (`experiments/comprehensive_eval.py`) — 7 tiers: factoid, comparison, synthesis, multi-hop, corpus_specific, out_of_corpus, adversarial
-- [x] RAGAS automated evaluation — Faithfulness + Answer Relevancy with Gemini 2.5 Flash judge and gemini-embedding-001
+- [x] DeepEval evaluation suite — three focused scripts replacing the monolithic `comprehensive_eval.py`
+- [x] Gemini-as-judge integration — custom `DeepEvalBaseLLM` wrapper; JSON mode via `generate_with_schema`
+- [x] Faithfulness 0.99, Answer Relevancy 0.87, Citation Quality 0.99, Refusal Correctness 0.90 (qwen3:14b, n=10)
 
 **In Progress**:
-- [ ] Full 200-query run (currently at 10-query smoke test)
-- [ ] Human spot-checks on judge disagreements (high-variance queries)
+- [ ] Full eval run at n=200 (currently validated at n=10–20)
+- [ ] Human spot-checks on judge disagreements
 
 **Pending**:
 - [ ] BEIR or MTEB retrieval benchmarks for comparison against published baselines
 - [ ] Per-tier breakdown at full scale — agent advantage expected to widen on synthesis and multi-hop tiers
+- [ ] Argument correctness coverage fix — eval_agent.py uses shared thread_id causing memory reuse; need per-turn thread isolation to force retrieval on every question
 
 ---
 
