@@ -147,10 +147,7 @@ def load_agent(ollama_model: str, retrieval: str):
     rag_chain = RAGChain(
         embedding_generator=embedding_gen,
         retriever=retriever,
-        llm_model=ollama_model,
-        llm_provider="ollama",
         ollama_model=ollama_model,
-        enable_prompt_cache=True,
     )
     return build_react_agent(rag_chain), rag_chain
 

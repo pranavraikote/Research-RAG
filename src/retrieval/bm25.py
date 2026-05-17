@@ -254,8 +254,11 @@ class BM25Retriever(BaseRetriever):
         # Tokenizing the query using bm25s tokenizer
         query_tokens = bm25s.tokenize([query], stopwords = "en")
 
-        # If filters are provided, retrieve more candidates for filtering
-        search_k = min(top_k * 3, len(self.chunks)) if filters else min(top_k, len(self.chunks))
+        # Always over-fetch before filtering or returning — more candidates
+        # means higher recall, and BM25 sparse retrieval is cheap regardless.
+        # The *3 multiplier applies universally; filters need it to cover rejection
+        # rate, and non-filtered searches benefit from a wider BM25 net before RRF.
+        search_k = min(top_k * 3, len(self.chunks))
 
         # Retrieving top candidates (returns doc indices and scores)
         doc_ids, scores = self.bm25.retrieve(query_tokens, k = search_k)

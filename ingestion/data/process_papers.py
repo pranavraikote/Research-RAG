@@ -6,10 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.data.loader import PDFLoader
-from src.chunking.basic import BasicChunker
+from ingestion.data.loader import PDFLoader
+from ingestion.chunking.basic import BasicChunker
 from src.embeddings import EmbeddingGenerator
-
 from src.retrieval.bm25 import BM25Retriever
 from src.retrieval.semantic import SemanticRetriever
 
