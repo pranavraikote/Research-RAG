@@ -23,10 +23,6 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from pydantic import BaseModel, Field
-
-from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 
 from .safety import sanitize_query, wrap_retrieved_content
@@ -36,15 +32,8 @@ from src.retrieval.query_parser import QueryParser
 logger = logging.getLogger(__name__)
 
 
-class RAGResponse(BaseModel):
-    answer: str = Field(description="Concise answer synthesised from the retrieved context.")
-    sources: list[str] = Field(description="List of paper titles cited in the answer, e.g. ['Title A (ACL 2025)', 'Title B (EMNLP 2025)'].")
-    confidence: float = Field(description="Confidence in the answer given the retrieved evidence, between 0.0 and 1.0.", ge=0.0, le=1.0)
-
-
 _rag_chain = None
 _decomposer = None
-_search_chain = None   # ChatPromptTemplate | ChatOllama | PydanticOutputParser
 _corpus_has_sections: bool = False   # True only when chunks carry section_type metadata
 _query_parser = QueryParser()        # Extracts conference/year filters from natural language
 
@@ -70,29 +59,13 @@ _SECTION_KEYWORDS: dict[str, list[str]] = {
 # Injection
 # ---------------------------------------------------------------------------
 
-_SEARCH_PROMPT = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        "You are a research assistant specialising in NLP papers. "
-        "Answer the user's question using ONLY the retrieved context below. "
-        "If the context is insufficient, say so and set confidence below 0.3. "
-        "Always cite by paper title.\n\n"
-        "Context:\n{context}",
-    ),
-    ("human", "{query}\n\n{format_instructions}"),
-])
-
-
 def set_rag_chain(rag_chain) -> None:
     """Inject the RAGChain instance and initialise the query decomposer."""
-    global _rag_chain, _decomposer, _corpus_has_sections, _search_chain
+    global _rag_chain, _decomposer, _corpus_has_sections
     _rag_chain = rag_chain
 
     from .decomposer import QueryDecomposer
     _decomposer = QueryDecomposer(llm=getattr(rag_chain, "llm", None), max_sub_queries=4)
-
-    _parser = PydanticOutputParser(pydantic_object=RAGResponse)
-    _search_chain = _SEARCH_PROMPT | rag_chain.llm | _parser
 
     # Probe corpus for section_type metadata — used to decide whether section
     # filters are worth applying. Basic chunks lack this; adaptive chunks have it.
@@ -253,33 +226,15 @@ def search_papers(query: str, top_k: int = 5) -> str:
         top_k: Number of top results to return (default 5, max 10).
 
     Returns:
-        Structured answer with cited sources and confidence score.
+        Formatted string of matching paper chunks with title, conference, year, section, and text.
     """
     top_k = min(top_k, 10)
     chunks = _search(query, top_k=top_k * 3)
     if not chunks:
         return "No results found."
-
     reranked = _rag_chain.reranker.rerank(query, chunks, top_k=top_k)
-    context = _format_chunks(reranked, query)
-
-    parser = PydanticOutputParser(pydantic_object=RAGResponse)
-    try:
-        response: RAGResponse = _search_chain.invoke({
-            "query": query,
-            "context": context,
-            "format_instructions": parser.get_format_instructions(),
-        })
-    except Exception as exc:
-        logger.warning("LCEL chain parse failed (%s) — falling back to raw context.", exc)
-        return context + "\nRemember: cite each fact with its [N] number in your answer."
-
-    sources_str = "\n".join(f"- {s}" for s in response.sources)
-    return (
-        f"{response.answer}\n\n"
-        f"Sources:\n{sources_str}\n\n"
-        f"Confidence: {response.confidence:.2f}"
-    )
+    result = _format_chunks(reranked, query)
+    return result + "\nRemember: cite each fact with its [N] number in your answer."
 
 
 @tool

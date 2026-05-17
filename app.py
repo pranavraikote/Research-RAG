@@ -20,7 +20,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.agentic.react_agent import build_react_agent, run_react_agent, reflect_on_answer
+from src.agentic.graph import build_graph, run_graph, reflect_on_answer
 from src.agentic.safety import sanitize_query
 from src.embeddings import EmbeddingGenerator
 from src.rag_chain import RAGChain
@@ -149,7 +149,7 @@ def load_agent(ollama_model: str, retrieval: str):
         retriever=retriever,
         ollama_model=ollama_model,
     )
-    return build_react_agent(rag_chain), rag_chain
+    return build_graph(rag_chain), rag_chain
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +307,7 @@ if prompt:
         tool_calls_log = []
         t_start = time.perf_counter()
 
-        for event in run_react_agent(agent, agent_prompt, thread_id=st.session_state.thread_id):
+        for event in run_graph(agent, agent_prompt, thread_id=st.session_state.thread_id):
             etype = event["type"]
 
             if etype == "tool_call":
@@ -373,7 +373,7 @@ if prompt:
             if needs_revision:
                 st.caption(f"Revising: {critique[:150]}")
                 revised = ""
-                for event in run_react_agent(
+                for event in run_graph(
                     agent,
                     f"Revise your previous answer to fix: {critique}\n\nOriginal question: {clean_prompt}",
                     thread_id=st.session_state.thread_id,

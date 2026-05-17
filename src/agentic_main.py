@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from langchain_core.messages import HumanMessage
 
-from src.agentic.react_agent import build_react_agent, run_react_agent, reflect_on_answer
+from src.agentic.graph import build_graph, run_graph, reflect_on_answer
 from src.agentic.safety import sanitize_query
 from src.embeddings import EmbeddingGenerator
 from src.rag_chain import RAGChain
@@ -66,7 +66,7 @@ def _run_turn(agent, embedding_gen, question: str, thread_id: str, llm, reflect:
         streaming = False
         answer_buf = ""
 
-        for event in run_react_agent(agent, question, thread_id=thread_id):
+        for event in run_graph(agent, question, thread_id=thread_id):
             etype = event["type"]
 
             if etype == "tool_call":
@@ -112,7 +112,7 @@ def _run_turn(agent, embedding_gen, question: str, thread_id: str, llm, reflect:
                 )
                 streaming = False
                 answer_buf = ""
-                for event in run_react_agent(agent, revised_question, thread_id=thread_id):
+                for event in run_graph(agent, revised_question, thread_id=thread_id):
                     etype = event["type"]
                     if etype == "tool_call":
                         q_text = event["args"].get("query", "")
@@ -217,7 +217,7 @@ def main():
     )
 
     print("Building ReAct agent…")
-    agent = build_react_agent(rag_chain)
+    agent = build_graph(rag_chain)
 
     print("Warming up LLM…", end=" ", flush=True)
     try:
