@@ -19,3 +19,6 @@ class ResearchRAGState(TypedDict):
     chunks: List[Dict[str, Any]]
     reranked_chunks: List[Dict[str, Any]]
     tool_iterations: int
+    human_approved: bool   # set by human_approval node; True means proceed to synthesis.
+    retrieval_feedback: str  # user hint on rejection; fed back into decompose for retry.
+    retrieval_attempts: int  # counts feedback-loop iterations; capped at _MAX_RETRIEVAL_ATTEMPTS.

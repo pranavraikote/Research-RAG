@@ -5,13 +5,12 @@ Evidence-aware RAG system for querying ACL Anthology research papers with cited,
 ## Features
 
 - **Retrieval** — Hybrid search (FAISS HNSW + BM25/RRF), adaptive section filtering, FAISS IDSelector pre-filtering
-- **Chunking** — HybridStructuredChunker: section-aware, citation-preserving, paragraph-based splitting with neighbor context expansion
-- **Re-ranking** — Cross-encoder re-ranking (BAAI/bge-reranker-v2-m3, 568M params) with min-max normalized scores
-- **Generation** — Cited streaming answers, auto LLM cascade (Ollama → HuggingFace), KV prompt caching
-- **Conversational** — Multi-turn history, heuristic + LLM query rewriting, pronoun/citation reference resolution
-- **Agentic** — LangGraph ReAct agent with query decomposition, multi-query RRF retrieval, citation enforcement, prompt injection protection, and conversational memory (MemorySaver)
+- **Chunking** — HybridStructuredChunker: section-aware, citation-preserving, paragraph-based splitting
+- **Re-ranking** — Cross-encoder re-ranking (BAAI/bge-reranker-v2-m3, 568M params, MPS/CUDA/CPU auto-detect)
+- **Agentic** — Flat LangGraph StateGraph with query decomposition, multi-query RRF retrieval, tool loop, and MemorySaver conversational memory
+- **HITL gate** — Human-in-the-loop approval before synthesis; annotated rejections loop back with a search hint; capped at 3 attempts
 - **Observability** — LangSmith tracing (automatic for all LangChain/LangGraph calls via env vars)
-- **Evaluation** — Human-labeled precision eval (MRR, P@K, nDCG@10), latency benchmarks, and 18-turn conversational agent eval — see [EVAL.md](EVAL.md)
+- **Evaluation** — DeepEval suite with Gemini-as-judge; Faithfulness 0.99, Answer Relevancy 0.87 (n=10, qwen3:14b)
 
 ## Quick Start
 
@@ -24,150 +23,158 @@ pip install -r requirements.txt
 ### 1. Download papers
 
 ```bash
-python src/data/download_papers.py
-# Downloads ACL, EMNLP, NAACL, EACL, COLING 2025 (200 papers/venue)
+python ingestion/data/download_papers.py
+# Downloads ACL, EMNLP, NAACL, EACL, COLING 2025 (~200 papers/venue → 842 total)
 # Or: place PDFs manually in data/acl/
 ```
 
 ### 2. Build indices
 
 ```bash
-# Basic chunking (54K chunks — better retrieval precision)
-python src/data/process_papers.py
+# Adaptive chunking (152K section-aware chunks — default, recommended)
+python ingestion/data/process_papers.py
 
-# Adaptive chunking (152K section-aware chunks — better generation quality)
-# Pre-built: artifacts/adaptive_chunks.json, adaptive_faiss_index, adaptive_bm25
+# Pre-built artifacts are committed: artifacts/adaptive_chunks.json,
+# adaptive_faiss_index, adaptive_bm25
 ```
 
 ### 3. Run the app
 
 ```bash
-# Streamlit chat interface (recommended)
+# Streamlit chat interface (primary)
 streamlit run app.py
 # Opens at http://localhost:8501
-# Select model and retrieval method in the sidebar; agent and index load once at startup.
+# Pick model and retrieval strategy in the sidebar.
 ```
 
-Or use the CLI directly:
+Or use the CLI:
 
 ```bash
-# Standalone query (auto-detects Ollama, falls back to HuggingFace)
-python src/main.py -q "What are the main approaches to few-shot learning?"
+# Interactive conversational mode
+python -m src.agentic_main
 
-# Hybrid retrieval + re-ranking
-python src/main.py -q "How do transformers handle long sequences?" \
-  --retrieval hybrid --fusion rrf --top-k 5 --rerank-k 3
+# Single-shot query
+python -m src.agentic_main -q "What are the main approaches to efficient attention?"
 
-# With adaptive indices (auto-detects section keywords and filters)
-python src/main.py -q "What methods are used for training transformers?" \
-  --retrieval hybrid \
-  --chunks-path artifacts/adaptive_chunks.json \
-  --index-path artifacts/adaptive_faiss_index
+# With reflection pass (post-answer citation check)
+python -m src.agentic_main -q "..." --reflect
 
-# Metadata filtering (also auto-parsed from natural language)
-python src/main.py -q "Find ACL 2025 papers about transformers"
-
-# Conversational mode (multi-turn, with query rewriting)
-python src/conversation_main.py --retrieval hybrid
-
-# Agentic mode — interactive conversational ReAct agent (recommended)
-python src/agentic_main.py --react --retrieval hybrid --ollama-model qwen3:14b
-
-# Agentic mode — single-shot query
-python src/agentic_main.py --react --retrieval hybrid --ollama-model qwen3:14b \
-  -q "Compare linear attention and standard attention methods and results"
+# Lighter model for faster responses
+python -m src.agentic_main --ollama-model qwen3:8b
 ```
 
-> **LangSmith tracing**: add the following to your `.envrc` or shell environment to enable automatic observability for all agent runs:
+> **LangSmith tracing**: set these env vars to enable automatic observability:
+>
 > ```bash
 > export LANGCHAIN_TRACING_V2=true
-> export LANGCHAIN_API_KEY=<your_key>   # smith.langchain.com → Settings → API Keys
+> export LANGCHAIN_API_KEY=<your_key>
 > export LANGCHAIN_PROJECT=ResearchRAG
 > ```
 
-### 4. Evaluate
+### 4. Build indices (Docker)
 
 ```bash
-# Latency benchmark across all strategy × chunking combinations
-python experiments/benchmark.py
+docker compose up --build
+# Ollama sidecar mounts ~/.ollama; pull your model first with: ollama pull qwen3:14b
+```
 
-# Precision eval — interactive human labeling then metric computation
-python experiments/evaluate.py --label --retrieval hybrid
-python experiments/evaluate.py --eval --labels experiments/labels.json
+### 5. Evaluate
 
-# Chunking comparison (basic vs adaptive)
-python experiments/evaluate.py --compare
+```bash
+# DeepEval suite (Gemini-as-judge, requires GEMINI_API_KEY)
+python experiments/eval_agent.py
+
+# 10-turn conversational eval
+python experiments/agent_eval_long.py
+
+# Latency benchmark
+python experiments/eval_retrieval.py
 ```
 
 ## Architecture
 
-**Standalone / Conversational**
-```
-Query → Query Parser (metadata filters) → Hybrid Retriever (FAISS + BM25)
-      → Re-ranker (cross-encoder) → LLM (cited streaming answer)
+```text
+Query
+  │
+  ▼
+decompose ── QueryDecomposer (LLM + heuristic fallback) → sub-queries
+  │
+  ▼
+retrieve ── _search() × N sub-queries → RRF merge
+  │
+  ▼
+rerank ── CrossEncoderReranker (bge-reranker-v2-m3)
+  │
+  ▼
+human_approval ── interrupt() ──► approved → llm_node
+                              ──► feedback  → decompose (retry, max 3)
+                              ──► abort     → END
+  │
+  ▼
+llm_node ── ChatOllama + bind_tools → answer or tool call
+  │  ▲
+  │  └── tool ── ToolNode (search_papers_multi / search_papers /
+  │               search_papers_in_section / detect_relevant_sections / search_pubmed)
+  ▼
+END
 ```
 
-**Agentic (ReAct)**
-```
-Query → Safety sanitizer → ReAct Agent (LangGraph + MemorySaver)
-          ├── search_papers_multi  →  Decomposer → N×Retriever → RRF merge → Reranker
-          ├── search_papers        →  Retriever → Reranker
-          ├── search_papers_in_section → Section-filtered Retriever → Reranker
-          └── detect_relevant_sections → Keyword mapper
-        → Cited structured answer (## Summary / ## Key Findings / ## Limitations)
-```
+**State** (ResearchRAGState): `messages` persisted by MemorySaver across turns; all other fields are ephemeral and reset each turn.
 
 ## Project Structure
 
 ```
 ResearchRAG/
+├── app.py                        # Streamlit chat interface (primary)
 ├── src/
-│   ├── main.py                    # Standalone query CLI
-│   ├── conversation_main.py       # Conversational CLI
-│   ├── agentic_main.py            # Agentic CLI
-│   ├── rag_chain.py               # RAG pipeline (LangChain)
-│   ├── embeddings.py              # BAAI/bge-base-en-v1.5 (768d)
-│   ├── data/
-│   │   ├── acl_loader.py          # ACL Anthology downloader
-│   │   ├── download_papers.py     # Batch download script
-│   │   ├── loader.py              # PDF processing (PyMuPDF)
-│   │   ├── structure_utils.py     # Section/citation/paragraph detection
-│   │   └── process_papers.py     # Chunk → embed → index pipeline
-│   ├── retrieval/
-│   │   ├── semantic.py            # FAISS HNSW/FlatIP + IDSelector filtering
-│   │   ├── bm25.py                # BM25 (bm25s, mmap persistence)
-│   │   ├── hybrid.py              # RRF + weighted fusion
-│   │   ├── adaptive_retriever.py  # Section keyword detection + context expansion
-│   │   ├── reranker.py            # Cross-encoder (bge-reranker-v2-m3)
-│   │   └── query_parser.py        # Metadata filter parsing
+│   ├── agentic_main.py           # CLI entrypoint
+│   ├── rag_chain.py              # RAGChain — embeddings, retriever, reranker, LLM
+│   ├── embeddings.py             # BAAI/bge-base-en-v1.5 (768d, LRU cache)
+│   ├── agentic/
+│   │   ├── graph.py              # ResearchRAGGraph class, build_graph, run_graph,
+│   │   │                         #   checkpoint_reflection, reflect_on_answer
+│   │   ├── state.py              # ResearchRAGState TypedDict
+│   │   ├── tools.py              # make_tools(rag_chain) factory — 5 tool closures
+│   │   ├── decomposer.py         # QueryDecomposer (LLM + heuristic fallback)
+│   │   └── safety.py             # Input sanitisation + injection-resistant wrapping
+│   └── retrieval/
+│       ├── semantic.py           # FAISS HNSW/FlatIP + IDSelector filtering
+│       ├── bm25.py               # BM25 (bm25s, mmap persistence)
+│       ├── hybrid.py             # HybridRetriever (RRF fusion)
+│       ├── reranker.py           # CrossEncoderReranker (MPS/CUDA/CPU, score cache)
+│       └── query_parser.py       # Metadata filter extraction from natural language
+├── ingestion/                    # One-time index building — not needed at query time
 │   ├── chunking/
-│   │   ├── basic.py               # Fixed-size, paragraph-aware
-│   │   └── hybrid_structured.py   # Section-aware, citation-aware
-│   ├── conversation/              # Multi-turn history, heuristic + LLM query rewriting
-│   └── agentic/
-│       ├── react_agent.py         # LangGraph create_react_agent + MemorySaver
-│       ├── tools.py               # search_papers_multi, search_papers, search_papers_in_section
-│       ├── decomposer.py          # LLM query decomposition with heuristic fallback
-│       ├── safety.py              # Input sanitization + injection-resistant content wrapping
-│       └── orchestrator.py        # Legacy v1 two-agent orchestrator
-├── app.py                         # Streamlit chat interface
-├── experiments/
-│   ├── benchmark.py               # Latency ablation
-│   └── evaluate.py                # Precision eval (label + eval + compare)
-├── artifacts/                     # FAISS index, BM25 index, chunks.json
-└── data/                          # PDFs and metadata
+│   │   ├── basic.py              # Fixed-size, paragraph-aware
+│   │   ├── semantic.py           # Embedding-based boundary detection
+│   │   └── hybrid_structured.py  # Section + citation aware (default)
+│   └── data/
+│       ├── acl_loader.py         # ACL Anthology metadata
+│       ├── download_papers.py    # Batch PDF downloader
+│       ├── loader.py             # PDF processing (PyMuPDF)
+│       ├── structure_utils.py    # Section/citation/paragraph detection
+│       └── process_papers.py    # Chunk → embed → index pipeline
+├── experiments/                  # Eval scripts (not a test suite)
+│   ├── eval_agent.py             # DeepEval suite (Gemini-as-judge)
+│   ├── agent_eval_long.py        # 10-turn conversational eval
+│   └── eval_retrieval.py         # Latency benchmarks
+├── artifacts/                    # Generated — not in git
+│   ├── adaptive_faiss_index      # 152K chunk HNSW index
+│   ├── adaptive_chunks.json      # Chunk text + metadata
+│   └── adaptive_bm25             # BM25 sparse index
+└── data/                         # PDFs and metadata
 ```
 
 ## Tech Stack
 
 | Component | Details |
 |---|---|
-| Vector DB | FAISS (HNSW M=32, efC=64; FlatIP fallback) |
+| Vector DB | FAISS (HNSW M=32, efC=64) |
 | Embeddings | BAAI/bge-base-en-v1.5 (768d, 512 tokens) |
 | Sparse search | bm25s (sparse matrices, mmap) |
-| Re-ranking | BAAI/bge-reranker-v2-m3 (568M params) |
+| Re-ranking | BAAI/bge-reranker-v2-m3 (568M params, MPS auto-detect) |
 | Chunking | HybridStructuredChunker (section + citation aware) |
-| LLM | ChatOllama (langchain-ollama) → ChatHuggingFace (fallback); both support bind_tools |
-| Agentic | LangGraph `create_react_agent` + `MemorySaver` |
+| LLM | ChatOllama — default `qwen3:14b`; `qwen3:8b` for lighter use |
+| Agentic | LangGraph flat `StateGraph` + `MemorySaver` + `interrupt()` for HITL |
 | Observability | LangSmith (automatic tracing via env vars) |
 | Data | ACL Anthology — 842 papers, 152K adaptive chunks |

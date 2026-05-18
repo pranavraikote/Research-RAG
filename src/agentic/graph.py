@@ -3,7 +3,11 @@ ResearchRAG — single flat LangGraph StateGraph.
 
 Pipeline
 --------
-START → decompose → retrieve → rerank → llm_node ──► END
+START → decompose → retrieve → rerank → human_approval ──► END (rejected)
+                                                │
+                                          (feedback)──► decompose (retry loop)
+                                                │
+                                           llm_node ──► END
                                              │  ▲
                                         tool_router
                                              │  │
@@ -12,19 +16,22 @@ START → decompose → retrieve → rerank → llm_node ──► END
 
 Nodes
 -----
-decompose   QueryDecomposer breaks the query into focused sub-queries (LLM-backed,
-            heuristic fallback). Resets ephemeral state at the start of each turn.
-retrieve    Runs hybrid retrieval (FAISS HNSW + BM25) for each sub-query and
-            merges results with Reciprocal Rank Fusion.
-rerank      CrossEncoderReranker (bge-reranker-v2-m3) scores and sorts the merged
-            chunks. Weak initial context is not gated — the LLM can call tools
-            to search more specifically if needed.
-llm_node    Builds a system message from the retrieved context and calls the LLM
-            with tools bound. On each tool iteration the tool results are already
-            in messages; the system context is rebuilt fresh from reranked_chunks.
-tool        ToolNode executes whatever tool the LLM requested (search_papers,
-            search_papers_multi, search_papers_in_section, detect_relevant_sections,
-            search_pubmed) and appends ToolMessages to state.
+decompose       QueryDecomposer breaks the query into focused sub-queries (LLM-backed,
+                heuristic fallback). Resets ephemeral state at the start of each turn.
+                If retrieval_feedback is set it is prepended to the query before
+                decomposing, then cleared.
+retrieve        Runs hybrid retrieval (FAISS HNSW + BM25) for each sub-query and
+                merges results with Reciprocal Rank Fusion.
+rerank          CrossEncoderReranker (bge-reranker-v2-m3) scores and sorts the merged
+                chunks.
+human_approval  HITL gate — pauses with interrupt() and surfaces retrieved context to
+                the caller. Resume value: True=approve, False=abort, str=feedback→retry.
+llm_node        Builds a system message from the retrieved context and calls the LLM
+                with tools bound. On each tool iteration the tool results are already
+                in messages; the system context is rebuilt fresh from reranked_chunks.
+tool            ToolNode executes whatever tool the LLM requested (search_papers,
+                search_papers_multi, search_papers_in_section, detect_relevant_sections,
+                search_pubmed) and appends ToolMessages to state.
 
 State
 -----
@@ -35,14 +42,19 @@ sub_queries       Decomposed sub-queries (ephemeral, reset each turn).
 chunks            Raw merged retrieval results (ephemeral).
 reranked_chunks   Cross-encoder scored chunks (ephemeral).
 tool_iterations   Guard counter reset each turn; caps tool loop at _MAX_TOOL_ITERATIONS.
+human_approved    Set by human_approval node; True = proceed to synthesis.
+retrieval_feedback  User hint on rejection; fed into decompose for retry, then cleared.
 
 Usage
 -----
-    graph = build_graph(rag_chain)
+    agent = build_graph(rag_chain)          # returns ResearchRAGGraph
 
-    for event in run_graph(graph, "What is linear attention?", thread_id="t1"):
+    for event in run_graph(agent, "What is linear attention?", thread_id="t1"):
         if event["type"] == "token":
             print(event["content"], end="")
+
+    # After reflect_on_answer(), persist the critique so future turns can see it:
+    checkpoint_reflection(agent, thread_id="t1", critique="Missing citations for X.")
 """
 
 from __future__ import annotations
@@ -55,13 +67,15 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.types import Command, interrupt
 
 from .state import ResearchRAGState
-from .tools import TOOLS, set_rag_chain
+from .tools import make_tools, _search, _rrf_merge
 
 logger = logging.getLogger(__name__)
 
 _MAX_TOOL_ITERATIONS = 5
+_MAX_RETRIEVAL_ATTEMPTS = 3
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -126,128 +140,209 @@ def _format_context(chunks: List[Dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Module-level component handles — set by build_graph()
+# Graph class
 # ---------------------------------------------------------------------------
 
-_llm_with_tools = None
-_decomposer = None
-_rag_chain = None
+class ResearchRAGGraph:
+    """
+    Compiled LangGraph StateGraph for ResearchRAG.
+
+    Components (LLM, decomposer, reranker) are instance attributes so multiple
+    graphs can coexist in the same process without global state conflicts.
+    State stays JSON-serialisable; only the compiled graph object is stored here.
+
+    Args:
+        rag_chain: Initialised RAGChain instance.
+    """
+
+    def __init__(self, rag_chain) -> None:
+        from .decomposer import QueryDecomposer
+
+        self._rag_chain = rag_chain
+        self._tools = make_tools(rag_chain)
+        self._llm_with_tools = rag_chain.llm.bind_tools(self._tools)
+        self._decomposer = QueryDecomposer(llm=rag_chain.llm, max_sub_queries=4)
+        self.graph = self._compile()
+
+    # -- public surface -------------------------------------------------------
+
+    @property
+    def checkpointer(self):
+        return self.graph.checkpointer
+
+    # -- graph compilation ----------------------------------------------------
+
+    def _compile(self):
+        tool_node = ToolNode(self._tools)
+
+        g = StateGraph(ResearchRAGState)
+        g.add_node("decompose", self._decompose_node)
+        g.add_node("retrieve", self._retrieve_node)
+        g.add_node("rerank", self._rerank_node)
+        g.add_node("human_approval", self._human_approval_node)
+        g.add_node("llm_node", self._llm_node)
+        g.add_node("tool", tool_node)
+        g.add_node("exhausted", self._retrieval_exhausted_node)
+
+        g.add_edge(START, "decompose")
+        g.add_edge("decompose", "retrieve")
+        g.add_edge("retrieve", "rerank")
+        g.add_edge("rerank", "human_approval")
+        g.add_conditional_edges(
+            "human_approval",
+            self._after_approval_router,
+            {"llm_node": "llm_node", "decompose": "decompose", "exhausted": "exhausted", END: END},
+        )
+        g.add_edge("exhausted", END)
+        g.add_conditional_edges("llm_node", self._tool_router, {"tool": "tool", END: END})
+        g.add_edge("tool", "llm_node")
+
+        return g.compile(checkpointer=MemorySaver())
+
+    # -- nodes ----------------------------------------------------------------
+
+    def _decompose_node(self, state: ResearchRAGState) -> Dict[str, Any]:
+        """Decompose the query into focused sub-queries; reset ephemeral state.
+
+        If retrieval_feedback is set (user annotated a prior rejection), it is
+        prepended to the query so the decomposer generates better-targeted
+        sub-queries, then cleared so it does not persist to the next turn.
+        """
+        feedback = state.get("retrieval_feedback", "")
+        effective_query = (
+            f"{state['query']}\n[Search hint from user: {feedback}]" if feedback else state["query"]
+        )
+        sub_query_objs = self._decomposer.decompose(effective_query)
+        sub_queries = [sq.query for sq in sub_query_objs]
+        logger.info("Decomposed into %d sub-queries: %s", len(sub_queries), sub_queries)
+        return {
+            "sub_queries": sub_queries,
+            "chunks": [],
+            "reranked_chunks": [],
+            "tool_iterations": 0,
+            "human_approved": True,
+            "retrieval_feedback": "",
+        }
+
+    def _retrieve_node(self, state: ResearchRAGState) -> Dict[str, Any]:
+        """Run hybrid retrieval for each sub-query and RRF-merge the results."""
+        top_k = 5
+        result_lists = []
+        for sq in state["sub_queries"]:
+            results = _search(sq, top_k * 3, self._rag_chain)
+            if results:
+                result_lists.append(results)
+        merged = _rrf_merge(result_lists, top_k=top_k * 2) if result_lists else []
+        logger.info("Retrieved %d merged chunks from %d sub-queries", len(merged), len(result_lists))
+        return {"chunks": merged}
+
+    def _rerank_node(self, state: ResearchRAGState) -> Dict[str, Any]:
+        """Rerank raw chunks with the cross-encoder."""
+        reranked = self._rag_chain.reranker.rerank(state["query"], state["chunks"], top_k=5)
+        top = reranked[0]["score"] if reranked else 0.0
+        logger.info("Reranked to %d chunks, top score=%.3f", len(reranked), top)
+        return {"reranked_chunks": reranked}
+
+    def _human_approval_node(self, state: ResearchRAGState) -> Dict[str, Any]:
+        """Pause for human approval before LLM synthesis.
+
+        The resume value (passed via Command(resume=...)) determines the outcome:
+          True            → approved; proceed to synthesis.
+          False / ""      → rejected with no feedback; end the turn.
+          str (non-empty) → rejected with a retrieval hint; loop back to decompose.
+                            Increments retrieval_attempts; capped at _MAX_RETRIEVAL_ATTEMPTS.
+        """
+        attempts = state.get("retrieval_attempts", 0)
+        context = _format_context(state["reranked_chunks"])
+        val = interrupt({
+            "n_chunks": len(state["reranked_chunks"]),
+            "context_preview": context[:600],
+            "attempt": attempts + 1,
+            "max_attempts": _MAX_RETRIEVAL_ATTEMPTS,
+        })
+        if val is True:
+            return {"human_approved": True, "retrieval_feedback": ""}
+        feedback = val if isinstance(val, str) and val else ""
+        if feedback:
+            return {
+                "human_approved": False,
+                "retrieval_feedback": feedback,
+                "retrieval_attempts": attempts + 1,
+            }
+        return {"human_approved": False, "retrieval_feedback": ""}
+
+    def _llm_node(self, state: ResearchRAGState) -> Dict[str, Any]:
+        """Call the LLM with retrieved context + conversation history."""
+        context = _format_context(state["reranked_chunks"])
+        system = SystemMessage(content=_SYSTEM_PROMPT + f"\n\nRetrieved context:\n{context}")
+        response = self._llm_with_tools.invoke([system] + list(state["messages"]))
+        return {
+            "messages": [response],
+            "tool_iterations": state["tool_iterations"] + 1,
+        }
+
+    # -- routers --------------------------------------------------------------
+
+    def _after_approval_router(self, state: ResearchRAGState) -> str:
+        """Four-way route: approved → llm_node, feedback+cap → exhausted,
+        feedback → decompose, abort → END."""
+        if state.get("human_approved", True):
+            return "llm_node"
+        if state.get("retrieval_feedback", ""):
+            if state.get("retrieval_attempts", 0) >= _MAX_RETRIEVAL_ATTEMPTS:
+                return "exhausted"
+            return "decompose"
+        return END
+
+    def _tool_router(self, state: ResearchRAGState) -> str:
+        """Continue to tool execution if LLM requested tools, else finish."""
+        last = state["messages"][-1]
+        if getattr(last, "tool_calls", None) and state["tool_iterations"] < _MAX_TOOL_ITERATIONS:
+            return "tool"
+        return END
+
+    def _retrieval_exhausted_node(self, state: ResearchRAGState) -> Dict[str, Any]:
+        """Emit a graceful end message after _MAX_RETRIEVAL_ATTEMPTS failed retrievals."""
+        from langchain_core.messages import AIMessage
+        msg = AIMessage(
+            content=(
+                f"I wasn't able to find satisfactory context after "
+                f"{_MAX_RETRIEVAL_ATTEMPTS} retrieval attempts. "
+                "Try rephrasing your question or using more specific search terms."
+            )
+        )
+        logger.info("Retrieval attempts exhausted after %d tries.", _MAX_RETRIEVAL_ATTEMPTS)
+        return {"messages": [msg]}
 
 
 # ---------------------------------------------------------------------------
-# Nodes
+# Public API
 # ---------------------------------------------------------------------------
 
-def _decompose_node(state: ResearchRAGState) -> Dict[str, Any]:
-    """Decompose the query into focused sub-queries; reset ephemeral state."""
-    sub_query_objs = _decomposer.decompose(state["query"])
-    sub_queries = [sq.query for sq in sub_query_objs]
-    logger.info("Decomposed into %d sub-queries: %s", len(sub_queries), sub_queries)
-    return {
-        "sub_queries": sub_queries,
-        "chunks": [],
-        "reranked_chunks": [],
-        "tool_iterations": 0,
-    }
-
-
-def _retrieve_node(state: ResearchRAGState) -> Dict[str, Any]:
-    """Run hybrid retrieval for each sub-query and RRF-merge the results."""
-    from .tools import _search, _rrf_merge  # reuse helpers already in tools.py
-    top_k = 5
-    result_lists = []
-    for sq in state["sub_queries"]:
-        results = _search(sq, top_k=top_k * 3)
-        if results:
-            result_lists.append(results)
-    merged = _rrf_merge(result_lists, top_k=top_k * 2) if result_lists else []
-    logger.info("Retrieved %d merged chunks from %d sub-queries", len(merged), len(result_lists))
-    return {"chunks": merged}
-
-
-def _rerank_node(state: ResearchRAGState) -> Dict[str, Any]:
-    """Rerank raw chunks with the cross-encoder."""
-    reranked = _rag_chain.reranker.rerank(state["query"], state["chunks"], top_k=5)
-    top = reranked[0]["score"] if reranked else 0.0
-    logger.info("Reranked to %d chunks, top score=%.3f", len(reranked), top)
-    return {"reranked_chunks": reranked}
-
-
-def _llm_node(state: ResearchRAGState) -> Dict[str, Any]:
-    """Call the LLM with retrieved context + conversation history."""
-    context = _format_context(state["reranked_chunks"])
-    system = SystemMessage(content=_SYSTEM_PROMPT + f"\n\nRetrieved context:\n{context}")
-    response = _llm_with_tools.invoke([system] + list(state["messages"]))
-    return {
-        "messages": [response],
-        "tool_iterations": state["tool_iterations"] + 1,
-    }
-
-
-def _tool_router(state: ResearchRAGState) -> str:
-    """Continue to tool execution if LLM requested tools, else finish."""
-    last = state["messages"][-1]
-    if getattr(last, "tool_calls", None) and state["tool_iterations"] < _MAX_TOOL_ITERATIONS:
-        return "tool"
-    return END
-
-
-# ---------------------------------------------------------------------------
-# Graph builder
-# ---------------------------------------------------------------------------
-
-def build_graph(rag_chain):
+def build_graph(rag_chain) -> ResearchRAGGraph:
     """
     Build and compile the ResearchRAG StateGraph.
-
-    Injects rag_chain components into module-level globals so nodes can access
-    the retriever, reranker, LLM, and tools without threading them through state
-    (state must remain JSON-serialisable for MemorySaver checkpointing).
 
     Args:
         rag_chain: Initialised RAGChain instance.
 
     Returns:
-        Compiled LangGraph graph with MemorySaver checkpointer.
+        ResearchRAGGraph wrapping a compiled LangGraph graph with MemorySaver.
     """
-    global _llm_with_tools, _decomposer, _rag_chain
-
-    set_rag_chain(rag_chain)
-    _rag_chain = rag_chain
-
-    from .decomposer import QueryDecomposer
-    _decomposer = QueryDecomposer(llm=rag_chain.llm, max_sub_queries=4)
-    _llm_with_tools = rag_chain.llm.bind_tools(TOOLS)
-
-    tool_node = ToolNode(TOOLS)
-
-    graph = StateGraph(ResearchRAGState)
-    graph.add_node("decompose", _decompose_node)
-    graph.add_node("retrieve", _retrieve_node)
-    graph.add_node("rerank", _rerank_node)
-    graph.add_node("llm_node", _llm_node)
-    graph.add_node("tool", tool_node)
-
-    graph.add_edge(START, "decompose")
-    graph.add_edge("decompose", "retrieve")
-    graph.add_edge("retrieve", "rerank")
-    graph.add_edge("rerank", "llm_node")
-    graph.add_conditional_edges("llm_node", _tool_router, {"tool": "tool", END: END})
-    graph.add_edge("tool", "llm_node")
-
-    return graph.compile(checkpointer=MemorySaver())
+    return ResearchRAGGraph(rag_chain)
 
 
-# ---------------------------------------------------------------------------
-# Streaming runner
-# ---------------------------------------------------------------------------
-
-def run_graph(graph, question: str, thread_id: str = "default"):
+def run_graph(agent: ResearchRAGGraph, question: str, thread_id: str = "default", on_approve=None):
     """
     Stream one turn of the graph and yield human-readable event dicts.
 
     Resets ephemeral state (sub_queries, chunks, reranked_chunks, tool_iterations)
     on each call while preserving the message history via MemorySaver + thread_id.
+
+    The graph includes a human_approval HITL gate after reranking. When the graph
+    reaches that node it pauses and emits an "approval_request" event. The caller
+    handles it via on_approve (callable → True/False/str) or receives the raw event.
+    If on_approve is None the gate auto-approves.
 
     Uses stream_mode=["updates", "messages"]:
       "messages" events → individual answer tokens from llm_node only
@@ -255,12 +350,24 @@ def run_graph(graph, question: str, thread_id: str = "default"):
       "updates"  events → complete tool calls, tool results, and final answer
 
     Yields dicts with 'type' key:
-      "token"       — one streamed token of the final answer
-      "tool_call"   — LLM decided to call a tool  {"tool": name, "args": {...}}
-      "tool_result" — tool returned output          {"tool": name, "result_preview": str}
-      "answer"      — complete final answer          {"content": str}
-      "error"       — something went wrong           {"error": str}
+      "token"             — one streamed token of the final answer
+      "tool_call"         — LLM decided to call a tool  {"tool": name, "args": {...}}
+      "tool_result"       — tool returned output         {"tool": name, "result_preview": str}
+      "answer"            — complete final answer         {"content": str}
+      "approval_request"  — HITL gate paused             {"n_chunks": int, "context_preview": str}
+      "approval_feedback" — user provided a retry hint   {"feedback": str}
+      "approval_rejected" — user aborted synthesis       {}
+      "error"             — something went wrong          {"error": str}
+
+    Args:
+        agent:       ResearchRAGGraph instance returned by build_graph().
+        question:    User query for this turn.
+        thread_id:   MemorySaver key (persists conversation history across turns).
+        on_approve:  Optional callable(data: dict) -> True | False | str.
+                     True = proceed, False = abort, str = retry with feedback hint.
+                     If None, auto-approves.
     """
+    graph = agent.graph
     config = {"configurable": {"thread_id": thread_id}}
     input_state = {
         "query": question,
@@ -269,19 +376,16 @@ def run_graph(graph, question: str, thread_id: str = "default"):
         "chunks": [],
         "reranked_chunks": [],
         "tool_iterations": 0,
+        "human_approved": True,
+        "retrieval_feedback": "",
+        "retrieval_attempts": 0,
     }
-    _answer_tokens: list[str] = []
 
-    try:
-        for stream_type, data in graph.stream(
-            input_state,
-            config=config,
-            stream_mode=["updates", "messages"],
-        ):
+    def _process(stream_iter, answer_tokens: list[str]):
+        """Yield events from a stream iterator, handling interrupt mid-stream."""
+        for stream_type, data in stream_iter:
             if stream_type == "messages":
                 msg, meta = data
-                # Only stream tokens from the main LLM node — the decomposer also
-                # calls the LLM and its tokens would otherwise leak into the stream.
                 if meta.get("langgraph_node") != "llm_node":
                     continue
                 msg_type = type(msg).__name__
@@ -291,37 +395,79 @@ def run_graph(graph, question: str, thread_id: str = "default"):
                     and not getattr(msg, "tool_call_chunks", None)
                 ):
                     yield {"type": "token", "content": msg.content}
-                    _answer_tokens.append(msg.content)
+                    answer_tokens.append(msg.content)
 
             elif stream_type == "updates":
+                if "__interrupt__" in data:
+                    interrupt_data = data["__interrupt__"][0].value
+                    yield {"type": "approval_request", **interrupt_data}
+                    val = on_approve(interrupt_data) if on_approve is not None else True
+                    if val is False or (isinstance(val, str) and not val):
+                        yield {"type": "approval_rejected"}
+                        return
+                    if isinstance(val, str):
+                        yield {"type": "approval_feedback", "feedback": val}
+                    resumed = graph.stream(
+                        Command(resume=val),
+                        config=config,
+                        stream_mode=["updates", "messages"],
+                    )
+                    yield from _process(resumed, answer_tokens)
+                    return
+
                 for _node, node_output in data.items():
                     for msg in node_output.get("messages", []):
                         msg_type = type(msg).__name__
 
                         if msg_type == "AIMessage":
                             if getattr(msg, "tool_calls", None):
-                                _answer_tokens.clear()
+                                answer_tokens.clear()
                                 for tc in msg.tool_calls:
                                     yield {"type": "tool_call", "tool": tc["name"], "args": tc["args"]}
                             elif msg.content:
-                                full = "".join(_answer_tokens) or msg.content
-                                _answer_tokens.clear()
+                                full = "".join(answer_tokens) or msg.content
+                                answer_tokens.clear()
                                 yield {"type": "answer", "content": full}
 
                         elif msg_type == "ToolMessage":
-                            _answer_tokens.clear()
+                            answer_tokens.clear()
                             yield {
                                 "type": "tool_result",
                                 "tool": msg.name,
                                 "result_preview": str(msg.content)[:300],
                             }
 
+    try:
+        initial_stream = graph.stream(
+            input_state, config=config, stream_mode=["updates", "messages"]
+        )
+        yield from _process(initial_stream, [])
     except Exception as exc:
         yield {"type": "error", "error": str(exc)}
 
 
+def checkpoint_reflection(agent: ResearchRAGGraph, thread_id: str, critique: str) -> None:
+    """
+    Persist a reflection critique into the MemorySaver checkpoint.
+
+    Without this call, reflect_on_answer() runs outside the graph and its findings
+    are invisible to future turns. Appending a SystemMessage here makes the critique
+    visible to the LLM on the next turn so it can avoid repeating the same mistakes.
+
+    Args:
+        agent:     ResearchRAGGraph instance returned by build_graph().
+        thread_id: Thread ID used for the turn that was just reflected on.
+        critique:  Critique text returned by reflect_on_answer().
+    """
+    if not critique:
+        return
+    config = {"configurable": {"thread_id": thread_id}}
+    note = SystemMessage(content=f"[Reflection on previous answer] {critique}")
+    agent.graph.update_state(config, {"messages": [note]})
+
+
 # ---------------------------------------------------------------------------
-# Reflection (unchanged utility — used by app.py and agentic_main.py)
+# Reflection
 # ---------------------------------------------------------------------------
 
 _REFLECTION_PROMPT = """\

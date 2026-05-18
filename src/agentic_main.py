@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from langchain_core.messages import HumanMessage
 
-from src.agentic.graph import build_graph, run_graph, reflect_on_answer
+from src.agentic.graph import build_graph, checkpoint_reflection, reflect_on_answer, run_graph
 from src.agentic.safety import sanitize_query
 from src.embeddings import EmbeddingGenerator
 from src.rag_chain import RAGChain
@@ -52,6 +52,38 @@ def _warn_if_no_citations(answer: str) -> None:
         )
 
 
+def _cli_approve(data: dict):
+    """Prompt the user to approve, abort, or annotate the retrieved context.
+
+    Returns:
+        True        — approved; proceed to synthesis.
+        False       — aborted; end the turn.
+        str (non-empty) — feedback hint; retry retrieval with the hint.
+    """
+    n = data.get("n_chunks", 0)
+    preview = data.get("context_preview", "")
+    attempt = data.get("attempt", 1)
+    max_att = data.get("max_attempts", 3)
+    label = f"attempt {attempt}/{max_att}" if attempt > 1 else ""
+    print(f"\n  [Retrieved {n} chunk{'s' if n != 1 else ''}{' · ' + label if label else ''}]")
+    if preview:
+        lines = preview.splitlines()[:3]
+        for line in lines:
+            print(f"    {line}")
+        if len(preview.splitlines()) > 3:
+            print("    …")
+    try:
+        answer = input("\n  Proceed to generate answer? [Y/n]: ").strip().lower()
+        if answer in ("", "y", "yes"):
+            return True
+        feedback = input(
+            "  What's wrong with the retrieved context? (Enter to abort, or type a hint to retry): "
+        ).strip()
+        return feedback if feedback else False
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
 def _run_turn(agent, embedding_gen, question: str, thread_id: str, llm, reflect: bool) -> None:
     """Execute one agent turn, print streamed output, optionally reflect."""
     clean_q, flagged = sanitize_query(question)
@@ -66,7 +98,7 @@ def _run_turn(agent, embedding_gen, question: str, thread_id: str, llm, reflect:
         streaming = False
         answer_buf = ""
 
-        for event in run_graph(agent, question, thread_id=thread_id):
+        for event in run_graph(agent, question, thread_id=thread_id, on_approve=_cli_approve):
             etype = event["type"]
 
             if etype == "tool_call":
@@ -95,6 +127,13 @@ def _run_turn(agent, embedding_gen, question: str, thread_id: str, llm, reflect:
                 else:
                     print()
 
+            elif etype == "approval_feedback":
+                print(f"  [Retrying] Searching with hint: \"{event['feedback']}\"")
+
+            elif etype == "approval_rejected":
+                print("\n  [Aborted] Synthesis rejected — no answer generated.")
+                return
+
             elif etype == "error":
                 print(f"\n[Error] {event['error']}")
 
@@ -103,6 +142,7 @@ def _run_turn(agent, embedding_gen, question: str, thread_id: str, llm, reflect:
         if reflect and answer_buf:
             print("\n  [Reflecting…]")
             critique, needs_revision = reflect_on_answer(llm, question, answer_buf)
+            checkpoint_reflection(agent, thread_id, critique)
             if needs_revision:
                 print(f"  [Revision needed] {critique[:200]}")
                 revised_question = (

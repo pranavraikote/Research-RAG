@@ -20,7 +20,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.agentic.graph import build_graph, run_graph, reflect_on_answer
+from src.agentic.graph import build_graph, checkpoint_reflection, reflect_on_answer, run_graph
 from src.agentic.safety import sanitize_query
 from src.embeddings import EmbeddingGenerator
 from src.rag_chain import RAGChain
@@ -310,7 +310,15 @@ if prompt:
         for event in run_graph(agent, agent_prompt, thread_id=st.session_state.thread_id):
             etype = event["type"]
 
-            if etype == "tool_call":
+            if etype == "approval_request":
+                n_chunks = event.get("n_chunks", 0)
+                preview = event.get("context_preview", "")
+                agent_status.update(label=f"Retrieved {n_chunks} chunk{'s' if n_chunks != 1 else ''} — synthesising…")
+                with agent_status:
+                    with st.expander("Retrieved context preview", expanded=False):
+                        st.caption(preview[:400] + ("…" if len(preview) > 400 else ""))
+
+            elif etype == "tool_call":
                 n_searches += 1
                 tool = event["tool"]
                 line = _tool_label(tool, event["args"])
@@ -369,6 +377,7 @@ if prompt:
                 critique, needs_revision = reflect_on_answer(
                     rag_chain.llm, clean_prompt, accumulated
                 )
+            checkpoint_reflection(agent, st.session_state.thread_id, critique)
 
             if needs_revision:
                 st.caption(f"Revising: {critique[:150]}")
